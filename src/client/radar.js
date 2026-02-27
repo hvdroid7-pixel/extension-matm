@@ -857,7 +857,8 @@
       if(!running) return;
       const sx = Math.random() * (area.clientWidth - 60) + 30;
       const sy = Math.random() * (area.clientHeight - 60) + 30;
-      const ch = String.fromCharCode(65 + Math.floor(Math.random()*26));
+      const allowedChars = 'BCEFGHIJKLMNOPQRTUVXYZ';
+      const ch = allowedChars[Math.floor(Math.random() * allowedChars.length)];
       const el = document.createElement('div');
       Object.assign(el.style,{position:'absolute',left:(sx-22)+'px',top:(sy-10)+'px',minWidth:'44px',height:'44px',borderRadius:'22px',background:'#1f8a66',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'800',fontSize:'18px'});
       const timeLabel = document.createElement('div'); Object.assign(timeLabel.style,{position:'absolute',left:'0',top:'-18px',width:'100%',textAlign:'center',color:'#fff',fontSize:'12px'});
