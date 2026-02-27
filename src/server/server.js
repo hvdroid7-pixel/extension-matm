@@ -586,6 +586,7 @@ function broadcastPlayersUpdate(game) {
       avatarUrl: player.avatarUrl,
       alive: player.alive,
       health: player.health,
+      position: player.position || null,
       disconnected: player.disconnected || false,
       connected: player.connected !== false
     };
@@ -1060,6 +1061,12 @@ function handleUpdatePosition(client, msg) {
         });
       });
     }
+
+    game.broadcast({
+      t: 'playerPositionUpdate',
+      name: client.name,
+      position: player.position
+    });
   }
 }
 

@@ -3938,7 +3938,6 @@ window.addEventListener('message', (ev) => {
   if (ev.data.source === 'radar-admin' && ev.data.type === 'positionUpdate') {
     window._lastKnownPosition = ev.data.position;
     window.islandPlayerPos = ev.data.position;
-    updateProximityWindows();
     
     // Send position to server periodically for tracking
     const now = Date.now();
@@ -4453,6 +4452,14 @@ function handleWsMessage(msg){
         position: msg.position
       }, '*');
       break;
+    case 'playerPositionUpdate':
+      if (msg.name && msg.position) {
+        trackedPlayerPositions[msg.name] = msg.position;
+        if (playersMap[msg.name]) {
+          playersMap[msg.name].position = msg.position;
+        }
+      }
+      break;
     case 'publicRoleReveal':
       publicReveals[msg.target] = msg.role;
       showNotification(`📢 ${msg.revealer} reveló que ${msg.target} es ${translateRole(msg.role)}`, 6000);
@@ -4708,7 +4715,7 @@ function sprintLoop(ts){
     }
     if (sprint.value < sprint.max) {
       sprint.value = Math.min(sprint.max, sprint.value + (sprint.regenRate * dt));
-      if (sprint.exhausted && sprint.value >= SPRINT_RECOVERY_THRESHOLD && !isJorguinCurseActive()) {
+      if (sprint.exhausted && sprint.value >= sprint.max && !isJorguinCurseActive()) {
         sprint.exhausted = false;
         sprintExhaustedTriggered = false;
         // Unblock sprint in radar after minimum recovery threshold
