@@ -240,6 +240,37 @@ function hasItem(itemId) {
   return getInventoryItemCount(itemId) > 0;
 }
 
+function isJorguinCurseActive() {
+  return controlLockState.jorguinCurseUntil > Date.now();
+}
+
+function forceSprintExhaustedLock() {
+  sprint.value = 0;
+  sprint.exhausted = true;
+  sprint.draining = false;
+
+  if (!sprintExhaustedTriggered) {
+    sprintExhaustedTriggered = true;
+    triggerSprintExhaustedActions();
+  }
+
+  window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: true }, '*');
+}
+
+function syncControlLockState() {
+  const curseActive = isJorguinCurseActive();
+
+  if (curseActive) {
+    if (!controlLockState.sprintForcedByCurse) {
+      controlLockState.sprintForcedByCurse = true;
+      forceSprintExhaustedLock();
+      updateSprintUI();
+    }
+  } else {
+    controlLockState.sprintForcedByCurse = false;
+  }
+}
+
 function isJokerActiveRole() {
   return rolesByName[meName] === 'joker' || revealedRoleForMe === 'joker';
 }
@@ -303,6 +334,11 @@ function updateInventoryUI() {
 function startItemUse(itemId) {
   const info = ITEM_INFO[itemId];
   if (!info || info.type !== 'active') return;
+
+  if (isJorguinCurseActive()) {
+    showNotification('⛔ Hechizado: no puedes usar objetos', 2000);
+    return;
+  }
   
   if (itemId === 'globos_joker') {
     triggerJokerDistract();
@@ -469,6 +505,7 @@ let frozen = false;
 let frozenUntil = 0;
 let abilityBlocked = false;
 let abilityBlockedUntil = 0;
+const controlLockState = { jorguinCurseUntil: 0, sprintForcedByCurse: false };
 let detectiveSpeedBuff = false;
 let detectiveSpeedBuffUntil = 0;
 
@@ -3139,6 +3176,9 @@ function resetGameState() {
   
   distractionActive = false;
   revealedRoleForMe = false;
+  controlLockState.jorguinCurseUntil = 0;
+  controlLockState.sprintForcedByCurse = false;
+  window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
   investigatedPlayers.length = 0;
@@ -4211,6 +4251,8 @@ function handleWsMessage(msg){
     case 'abilityBlocked':
       abilityBlocked = true;
       abilityBlockedUntil = Date.now() + msg.duration;
+      controlLockState.jorguinCurseUntil = abilityBlockedUntil;
+      syncControlLockState();
       $('#flee-blocked-overlay').style.display = 'flex';
       updateBlockedTimer();
       showNotification('⛔ Tu habilidad fue bloqueada', 3000);
@@ -4456,6 +4498,10 @@ function updateBlockedTimer(){
   if (remaining <= 0) {
     abilityBlocked = false;
     abilityBlockedUntil = 0;
+    if (controlLockState.jorguinCurseUntil <= Date.now()) {
+      controlLockState.jorguinCurseUntil = 0;
+    }
+    syncControlLockState();
     $('#flee-blocked-overlay').style.display = 'none';
     // Restore floating buttons to normal state
     updateJokerButtonVisuals();
@@ -4470,9 +4516,20 @@ const SPRINT_RECOVERY_THRESHOLD = 30;
 
 function sprintLoop(ts){
   const dt = 0.016;
-  
+
+  syncControlLockState();
+
   if (frozen || abilityBlocked) {
     sprint.draining = false;
+  }
+
+  if (isJorguinCurseActive()) {
+    sprint.value = 0;
+    sprint.exhausted = true;
+    sprint.draining = false;
+    updateSprintUI();
+    requestAnimationFrame(sprintLoop);
+    return;
   }
   
   if (sprint.exhausted) {
@@ -4514,7 +4571,7 @@ function sprintLoop(ts){
     }
     if (sprint.value < sprint.max) {
       sprint.value = Math.min(sprint.max, sprint.value + (sprint.regenRate * dt));
-      if (sprint.exhausted && sprint.value >= SPRINT_RECOVERY_THRESHOLD) {
+      if (sprint.exhausted && sprint.value >= SPRINT_RECOVERY_THRESHOLD && !isJorguinCurseActive()) {
         sprint.exhausted = false;
         sprintExhaustedTriggered = false;
         // Unblock sprint in radar after minimum recovery threshold
@@ -4529,7 +4586,7 @@ function sprintLoop(ts){
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Shift') {
-    if (sprint.exhausted || sprint.value <= 0) {
+    if (isJorguinCurseActive() || sprint.exhausted || sprint.value <= 0) {
       e.preventDefault();
       e.stopPropagation();
       sprint.draining = false;
