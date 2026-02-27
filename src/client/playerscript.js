@@ -4798,6 +4798,7 @@ function updateBlockedTimer(){
 }
 
 let sprintExhaustedTriggered = false;
+const SPRINT_RECOVERY_THRESHOLD = 30;
 
 function sprintLoop(ts){
   const dt = 0.016;
