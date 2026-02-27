@@ -639,7 +639,18 @@ function updateHourglassTimer() {
   setTimeout(updateHourglassTimer, 100);
 }
 
-let exterminateTimerState = { active: false, end: 0, target: '', attacker: '' };
+let exterminateTimerState = { active: false, end: 0, target: '', attacker: '', perspective: '' };
+let exterminateTimerInterval = null;
+
+function clearExterminateTimerState() {
+  exterminateTimerState = { active: false, end: 0, target: '', attacker: '', perspective: '' };
+  if (exterminateTimerInterval) {
+    clearInterval(exterminateTimerInterval);
+    exterminateTimerInterval = null;
+  }
+  const timerEl = $('#flee-exterminate-timer');
+  if (timerEl) timerEl.style.display = 'none';
+}
 
 function updateExterminateTimerUI() {
   const timerEl = $('#flee-exterminate-timer');
@@ -651,17 +662,24 @@ function updateExterminateTimerUI() {
   }
 
   const remaining = Math.max(0, Math.ceil((exterminateTimerState.end - Date.now()) / 1000));
-  const targetInfo = exterminateTimerState.target ? ` ${exterminateTimerState.target}` : '';
   timerEl.style.display = 'block';
-  timerEl.textContent = `💀 Exterminar${targetInfo}: ${remaining}s`;
 
-  if (remaining <= 0) {
-    exterminateTimerState.active = false;
-    timerEl.style.display = 'none';
-    return;
+  if (exterminateTimerState.perspective === 'target') {
+    timerEl.textContent = `¡Serás exterminado en ${remaining}s! ☄️`;
+  } else {
+    timerEl.textContent = `El jugador ${exterminateTimerState.target} será exterminado en ${remaining}s ☄️`;
   }
 
-  setTimeout(updateExterminateTimerUI, 200);
+  if (remaining <= 0) {
+    clearExterminateTimerState();
+  }
+}
+
+function startExterminateTimerState(nextState) {
+  exterminateTimerState = { ...nextState, active: true };
+  updateExterminateTimerUI();
+  if (exterminateTimerInterval) clearInterval(exterminateTimerInterval);
+  exterminateTimerInterval = setInterval(updateExterminateTimerUI, 1000);
 }
 
 let currentLobby = null;
@@ -802,7 +820,7 @@ function createStyles(){
     }
     .prox-btn.active { background: #2ecc71; color: white; }
 
-    .flee-notification{background:linear-gradient(135deg,rgba(8,20,38,0.95),rgba(18,37,68,0.92));color:var(--flee-text);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,0.15);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;animation:slideIn 0.25s ease;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(4px)}
+    .flee-notification{background:linear-gradient(145deg,rgba(8,20,38,0.96),rgba(18,37,68,0.93));color:var(--flee-text);padding:10px 12px;border-radius:12px;border:1px solid rgba(var(--flee-border-rgb),0.30);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(6px);opacity:1;transform:translateX(0);transition:opacity 0.22s ease,transform 0.22s ease;animation:toastIn 0.24s ease}
     .notif-avatar{width:34px;height:34px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;flex:0 0 34px}
     .notif-text{line-height:1.25;font-size:13px;word-break:break-word}
 
@@ -909,8 +927,9 @@ function createStyles(){
     .flee-shop-item{background:rgba(255,255,255,0.05);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:12px;padding:15px;margin:10px 0;display:flex;justify-content:space-between;align-items:center}
     .flee-shop-item:hover{border-color:var(--flee-border);background:rgba(var(--flee-border-rgb),0.10)}
     
-    .flee-notification{position:fixed;top:100px;right:20px;background:rgba(0,0,0,0.9);color:white;padding:15px 20px;border-radius:12px;border-left:4px solid var(--flee-border);font-weight:700;z-index:100030;animation:slideIn 0.3s ease}
+    .flee-notification.is-leaving{opacity:0;transform:translateX(12px)}
     @keyframes slideIn{from{transform:translateX(400px);opacity:0}to{transform:translateX(0);opacity:1}}
+    @keyframes toastIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
     
     .flee-effect-buff{animation:buffPulse 0.5s ease}
     @keyframes buffPulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.5) drop-shadow(0 0 10px var(--flee-border))}}
@@ -3393,8 +3412,7 @@ function resetGameState() {
   controlLockState.jorguinCurseUntil = 0;
   controlLockState.psychicFrozenUntil = 0;
   controlLockState.sprintForcedByCurse = false;
-  exterminateTimerState.active = false;
-  updateExterminateTimerUI();
+  clearExterminateTimerState();
   window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
@@ -3914,6 +3932,20 @@ function updateCoinsUI(){
 
 let activeNotifications = [];
 
+function removeNotificationElement(notif) {
+  if (!notif || notif.dataset.removing === '1') return;
+  notif.dataset.removing = '1';
+  if (notif._dismissTimer) {
+    clearTimeout(notif._dismissTimer);
+    notif._dismissTimer = null;
+  }
+  notif.classList.add('is-leaving');
+  setTimeout(() => {
+    notif.remove();
+    activeNotifications = activeNotifications.filter(n => n !== notif);
+  }, 220);
+}
+
 function showNotification(message, duration = 3000){
   const notif = document.createElement('div');
   notif.className = 'flee-notification';
@@ -3936,9 +3968,13 @@ function showNotification(message, duration = 3000){
   stack.appendChild(notif);
   activeNotifications.push(notif);
 
-  setTimeout(() => {
-    notif.remove();
-    activeNotifications = activeNotifications.filter(n => n !== notif);
+  const MAX_NOTIFICATIONS = 5;
+  if (activeNotifications.length > MAX_NOTIFICATIONS) {
+    removeNotificationElement(activeNotifications[0]);
+  }
+
+  notif._dismissTimer = setTimeout(() => {
+    removeNotificationElement(notif);
   }, duration);
 }
 
@@ -4472,15 +4508,16 @@ function handleWsMessage(msg){
       setTimeout(() => clickPlayButton(), 150);
       updateFrozenTimer();
       break;
-    case 'exterminateTimer':
-      exterminateTimerState = {
-        active: true,
+    case 'exterminateTimer': {
+      const isTarget = !msg.target && !!msg.attacker;
+      startExterminateTimerState({
         end: msg.end || (Date.now() + 60000),
-        target: msg.target || '',
-        attacker: msg.attacker || ''
-      };
-      updateExterminateTimerUI();
+        target: msg.target || meName,
+        attacker: msg.attacker || meName,
+        perspective: isTarget ? 'target' : 'attacker'
+      });
       break;
+    }
     case 'notification':
       showNotification(msg.msg || msg.message || 'Aviso', 4000);
       break;
@@ -4569,6 +4606,9 @@ function handleWsMessage(msg){
     case 'playerDied':
       if (playersMap[msg.name]) {
         playersMap[msg.name].alive = false;
+      }
+      if (exterminateTimerState.active && (msg.name === exterminateTimerState.target || msg.name === meName)) {
+        clearExterminateTimerState();
       }
       refreshPlayersUI();
       if (msg.name === meName) {
