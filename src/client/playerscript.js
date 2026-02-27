@@ -127,9 +127,15 @@ function createProximitySystem() {
         </div>
       `;
       getContainer().prepend(el);
-      win = { element: el };
+      win = { element: el, actionsSignature: '' };
       proximityWindows[playerName] = win;
     }
+
+    if (win.removeTimer) {
+      clearTimeout(win.removeTimer);
+      win.removeTimer = null;
+    }
+    win.element.classList.remove('is-leaving');
 
     const avatar = win.element.querySelector('.prox-avatar');
     if (avatar && playerData.avatarUrl) avatar.src = playerData.avatarUrl;
@@ -178,6 +184,41 @@ function updateProximityWindows() {
   proximitySystem.update();
 }
 
+function buildActionButtonsSignature(myRole, targetName) {
+  if (abilityBlocked) return `blocked:${myRole}:${targetName}`;
+
+  const buttons = [];
+  if (myRole === 'killer') buttons.push('attack');
+  if (myRole === 'medic') buttons.push('heal');
+  if (myRole === 'detective') buttons.push('investigate');
+  if (myRole === 'bodyguard') {
+    const isProtecting = guardState.protecting === targetName;
+    buttons.push(`protect:${isProtecting ? 'off' : 'on'}`);
+  }
+  if (myRole === 'psychic') {
+    buttons.push('freeze');
+    if (!cooldowns.psychic_exterminate_used) buttons.push('exterminate');
+  }
+  if (myRole === 'sheriff') {
+    if (!cooldowns.sheriff_reveal_used) buttons.push('reveal');
+    buttons.push('shoot');
+  }
+  if (myRole === 'jorguin') {
+    buttons.push('block', 'jorguin_attack');
+  }
+  if (myRole === 'spy') {
+    buttons.push('spy_investigate', 'spy_attack');
+  }
+
+  const cooldownSnapshot = buttons.map((type) => {
+    const key = getCooldownKeyForType(type.split(':')[0]);
+    if (!key || !isOnCooldown(key)) return `${type}:ready`;
+    return `${type}:${Math.ceil((cooldowns[key] - Date.now()) / 1000)}`;
+  }).join('|');
+
+  return `${myRole}:${targetName}:${cooldownSnapshot}`;
+}
+
 function showProximityWindow(name, p) {
   let win = proximityWindows[name];
   if (!win) {
@@ -187,11 +228,15 @@ function showProximityWindow(name, p) {
   const actions = win.element.querySelector('.prox-actions');
   if (!actions) return;
 
+  const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+  const signature = buildActionButtonsSignature(myRole, name);
+  if (win.actionsSignature === signature) return;
+
   actions.innerHTML = '';
+  win.actionsSignature = signature;
 
   if (abilityBlocked) return;
 
-  const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
   const buttons = getActionButtonsForRole(myRole, name);
   buttons.forEach(btn => actions.appendChild(btn));
 }
@@ -206,9 +251,18 @@ function createProxBtn(container, text, onclick) {
 }
 
 function removeProximityWindow(name) {
-  if (proximityWindows[name]) {
-    proximityWindows[name].element.remove();
-    delete proximityWindows[name];
+  const win = proximityWindows[name];
+  if (win) {
+    if (win.removeTimer) return;
+
+    win.element.classList.add('is-leaving');
+    win.removeTimer = setTimeout(() => {
+      if (win.element && win.element.parentNode) {
+        win.element.remove();
+      }
+      delete proximityWindows[name];
+    }, 180);
+
     if (guardState.protecting === name) {
       guardState.protecting = null;
       wsSend({ t: 'protect', target: null });
@@ -685,22 +739,27 @@ function createStyles(){
     #flee-toast-stack{display:flex;flex-direction:column;gap:10px;order:2}
 
     .flee-proximity-window {
-      background: rgba(0,0,0,0.85);
-      border: 2px solid var(--flee-border);
-      border-radius: 12px;
-      padding: 10px;
+      background: linear-gradient(145deg, rgba(8,16,30,0.94), rgba(14,24,42,0.92));
+      border: 1px solid rgba(var(--flee-border-rgb),0.55);
+      border-radius: 10px;
+      padding: 8px 9px;
       display: flex;
-      gap: 12px;
-      min-width: 200px;
+      align-items: center;
+      gap: 9px;
+      min-width: 188px;
       pointer-events: auto;
-      animation: slideIn 0.3s ease;
       color: var(--flee-text);
+      box-shadow: 0 10px 24px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.06);
+      transform-origin: top right;
+      animation: slideIn 0.2s ease;
+      transition: opacity 0.18s ease, transform 0.18s ease;
     }
+    .flee-proximity-window.is-leaving { opacity: 0; transform: translateX(10px) scale(0.985); }
 
-    .prox-avatar { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--flee-border); object-fit: cover; }
-    .prox-info { flex: 1; }
-    .prox-name { font-weight: 800; font-size: 14px; margin-bottom: 5px; }
-    .prox-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+    .prox-avatar { width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(var(--flee-border-rgb),0.75); object-fit: cover; flex: 0 0 38px; }
+    .prox-info { flex: 1; min-width: 0; }
+    .prox-name { font-weight: 800; font-size: 13px; margin-bottom: 4px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .prox-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
     .prox-btn { 
       padding: 4px 8px; 
       background: var(--flee-border); 
@@ -891,9 +950,10 @@ function createStyles(){
     #flee-profile-status{font-size:14px;margin-bottom:20px}
     #flee-profile-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:15px}
     
-    .flee-action-btn{padding:12px 20px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer;border:2px solid transparent;transition:all 0.3s;display:flex;align-items:center;gap:6px}
-    .flee-action-btn:hover:not(:disabled){transform:scale(1.05);box-shadow:0 4px 15px rgba(0,0,0,0.4)}
-    .flee-action-btn:disabled{opacity:0.5;cursor:not-allowed}
+    .flee-action-btn{padding:8px 12px;border-radius:9px;font-weight:700;font-size:12px;line-height:1;cursor:pointer;border:1px solid transparent;transition:transform 0.16s ease,box-shadow 0.16s ease,filter 0.16s ease,opacity 0.16s ease;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:28px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+    .flee-action-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 14px rgba(0,0,0,0.35);filter:saturate(1.1)}
+    .flee-action-btn.is-pressed:not(:disabled){transform:translateY(0);box-shadow:0 2px 6px rgba(0,0,0,0.35);filter:brightness(0.96)}
+    .flee-action-btn:disabled{opacity:0.46;cursor:not-allowed;filter:grayscale(0.2);box-shadow:none;transform:none}
     .flee-action-btn.attack{background:linear-gradient(135deg,#ff4444,#cc3333);color:white;border-color:#ff6666}
     .flee-action-btn.heal{background:linear-gradient(135deg,#44ff88,#27ae60);color:white;border-color:#56d364}
     .flee-action-btn.investigate{background:linear-gradient(135deg,#ffcc00,#f39c12);color:#333;border-color:#ffd700}
@@ -904,6 +964,7 @@ function createStyles(){
     .flee-action-btn.shoot{background:linear-gradient(135deg,#8b4513,#654321);color:white;border-color:#a0522d}
     .flee-action-btn.build{background:linear-gradient(135deg,#a0522d,#8b4513);color:white;border-color:#cd853f}
     .flee-action-btn.joker{background:linear-gradient(135deg,#aa66ff,#8a2be2);color:white;border-color:#bb77ff}
+    .flee-proximity-window .flee-action-btn{min-height:24px;padding:6px 9px;font-size:11px;border-radius:8px}
     
     #flee-joker-floating{position:fixed;left:12px;bottom:78px;z-index:100700;padding:10px 14px;border-radius:10px;background:linear-gradient(135deg,#9b59b6,#8e44ad);color:#fff;border:2px solid rgba(0,0,0,0.2);cursor:pointer;font-weight:900;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.45);transition:all 0.3s}
     #flee-joker-floating:hover:not(:disabled){transform:scale(1.05);box-shadow:0 10px 30px rgba(155,89,182,0.5)}
@@ -1933,6 +1994,7 @@ function getActionButtonsForRole(myRole, targetName) {
 
 function createActionButton(text, type, onClick) {
   const btn = document.createElement('button');
+  btn.type = 'button';
   btn.className = `flee-action-btn ${type}`;
   btn.innerHTML = text;
   
@@ -1942,9 +2004,19 @@ function createActionButton(text, type, onClick) {
     const remaining = Math.ceil((cooldowns[cooldownKey] - Date.now()) / 1000);
     btn.innerHTML = `${text} (${remaining}s)`;
   }
+
+  const clearPressedState = () => btn.classList.remove('is-pressed');
+  btn.addEventListener('pointerdown', () => {
+    if (!btn.disabled) btn.classList.add('is-pressed');
+  });
+  btn.addEventListener('pointerup', clearPressedState);
+  btn.addEventListener('pointercancel', clearPressedState);
+  btn.addEventListener('mouseleave', clearPressedState);
+  btn.addEventListener('blur', clearPressedState);
   
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (btn.disabled) return;
     onClick();
   });
   
