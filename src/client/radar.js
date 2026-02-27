@@ -93,16 +93,15 @@
 
   /* --------------- UI CSS --------------- */
   const CSS = `
-  :root{--im-radar-bg:#000000;--im-radar-text:#ffffff;--im-radar-border:#ffffff;--im-radar-internal:#ffffff;--im-radar-gradient:#808080}
-  #im_toggle{position:fixed;left:10px;top:72px;z-index:99999;background:linear-gradient(180deg,var(--im-radar-bg),var(--im-radar-gradient));color:var(--im-radar-text);padding:6px;border-radius:8px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.5);font-size:14px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;border:1px solid var(--im-radar-border)}
-  #im_panel{position:fixed;left:60px;top:90px;width:240px;height:300px;z-index:99999;background:var(--im-radar-bg);color:var(--im-radar-text);border-radius:12px;padding:10px;font-family:Inter,Arial;border:2px solid var(--im-radar-border);box-shadow:0 14px 40px rgba(0,0,0,0.6);display:none}
+  #im_toggle{position:fixed;left:10px;top:72px;z-index:99999;background:linear-gradient(180deg,#081219,#02110b);color:#bfffe0;padding:6px;border-radius:8px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.5);font-size:14px;width:30px;height:30px;display:flex;align-items:center;justify-content:center}
+  #im_panel{position:fixed;left:60px;top:90px;width:240px;height:300px;z-index:99999;background:rgba(0,0,0,0.78);color:#e9eef7;border-radius:12px;padding:10px;font-family:Inter,Arial;border:2px solid rgba(255,255,255,0.96);box-shadow:0 14px 40px rgba(0,0,0,0.6);display:none}
   #im_header{display:flex;align-items:center;gap:8px;cursor:grab}
   #im_preview{width:100%;height:160px;border-radius:9999px;display:block;background:transparent;margin-top:8px}
-  .im_btn{cursor:pointer;padding:6px 8px;border-radius:8px;background:var(--im-radar-internal);color:var(--im-radar-bg);border:1px solid var(--im-radar-border);font-weight:700}
+  .im_btn{cursor:pointer;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.04);color:#e9eef7;border:1px solid rgba(255,255,255,0.03);font-weight:700}
   .im_btn:hover{background:rgba(255,255,255,0.12)}
   .im_btn_shop{background:linear-gradient(135deg,#2ecc71,#27ae60);color:#fff;border:1px solid #3ce37d}
   .im_btn_shop:hover{background:linear-gradient(135deg,#3ce37d,#2ecc71)}
-  #im_bottomMsg{position:fixed;left:50%;transform:translateX(-50%);bottom:30px;z-index:100000;background:var(--im-radar-bg);color:var(--im-radar-text);padding:10px 14px;border-radius:14px;font-weight:700;display:none;align-items:center;gap:10px;border:1px solid var(--im-radar-border)}
+  #im_bottomMsg{position:fixed;left:50%;transform:translateX(-50%);bottom:30px;z-index:100000;background:rgba(0,0,0,0.78);color:white;padding:10px 14px;border-radius:14px;font-weight:700;display:none;align-items:center;gap:10px}
   .zoneEmoji{font-size:18px;margin-right:8px}
   #im_task_count{font-size:12px;color:#bfe6d8;margin-top:8px;text-align:center}
   #im_fullOverlay{position:fixed;inset:0;background:rgba(2,6,23,0.78);z-index:99998;display:none;align-items:center;justify-content:center}
@@ -150,15 +149,6 @@
   .im_fixLocationCoords{font-size:11px;color:rgba(255,255,255,0.5)}
   `;
   const style = document.createElement('style'); style.innerText = CSS; document.head.appendChild(style);
-
-  function applyRadarTheme(theme = {}) {
-    const root = document.documentElement;
-    root.style.setProperty('--im-radar-bg', theme.bg || '#000000');
-    root.style.setProperty('--im-radar-text', theme.text || '#ffffff');
-    root.style.setProperty('--im-radar-border', theme.border || '#ffffff');
-    root.style.setProperty('--im-radar-internal', theme.internal || '#ffffff');
-    root.style.setProperty('--im-radar-gradient', theme.gradient || '#808080');
-  }
 
   /* --------------- BUILD DOM --------------- */
   const toggle = document.createElement('button'); toggle.id='im_toggle'; toggle.textContent='☰'; document.body.appendChild(toggle);
@@ -1305,9 +1295,6 @@
         if (state.sprintBlocked) {
           state.running = false; // Stop running immediately when blocked
         }
-      }
-      if (d.type === 'themeUpdate' && d.theme) {
-        applyRadarTheme(d.theme);
       }
     }
     if (d.t === 'radarState'){
