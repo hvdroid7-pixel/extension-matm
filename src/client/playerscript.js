@@ -50,8 +50,9 @@ function createProximitySystem() {
   }
 
   function getDetectionThreshold(targetName) {
-    if (revealedRoleForMe === 'sheriff') return EXTENDED_THRESHOLD;
-    if (revealedRoleForMe === 'spy' && investigatedPlayers.includes(targetName)) return EXTENDED_THRESHOLD;
+    const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+    if (myRole === 'sheriff') return EXTENDED_THRESHOLD;
+    if (myRole === 'spy' && spyInvestigatedPlayers.includes(targetName)) return EXTENDED_THRESHOLD;
     return BASE_THRESHOLD;
   }
 
@@ -473,6 +474,7 @@ let detectiveSpeedBuffUntil = 0;
 
 let publicReveals = {};
 let investigatedPlayers = [];
+let spyInvestigatedPlayers = [];
 let barricades = [];
 
 let readyState = { isReady: false, readyCount: 0, totalPlayers: 0 };
@@ -3140,6 +3142,7 @@ function resetGameState() {
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
   investigatedPlayers.length = 0;
+  spyInvestigatedPlayers.length = 0;
   Object.keys(publicReveals).forEach(k => delete publicReveals[k]);
   
   removeJokerButton();
@@ -4256,6 +4259,7 @@ function handleWsMessage(msg){
     case 'spyInvestigationResult':
       showNotification(`🐈‍⬛ ${msg.target} es ${translateRole(msg.role)}`, 5000);
       investigatedPlayers.push(msg.target);
+      if (!spyInvestigatedPlayers.includes(msg.target)) spyInvestigatedPlayers.push(msg.target);
       window.postMessage({ source: 'radar-admin', type: 'trackPlayer', name: msg.target, role: msg.role }, '*');
       break;
     case 'trackedPlayerPosition':
