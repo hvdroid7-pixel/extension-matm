@@ -142,36 +142,9 @@ function showProximityWindow(name, p) {
 
   if (abilityBlocked) return;
 
-  const role = revealedRoleForMe;
-  if (role === 'killer') {
-    createProxBtn(actions, '🗡️ Atacar', () => wsSend({ t: 'attack', target: name }));
-  } else if (role === 'medic') {
-    createProxBtn(actions, '💊 Curar', () => wsSend({ t: 'heal', target: name }));
-  } else if (role === 'detective') {
-    createProxBtn(actions, '🔍 Investigar', () => wsSend({ t: 'investigate', target: name }));
-  } else if (role === 'sheriff') {
-    createProxBtn(actions, '🎯 Disparar', () => wsSend({ t: 'sheriffShoot', target: name }));
-  } else if (role === 'jorguin') {
-    createProxBtn(actions, '🪄 Hechizar', () => wsSend({ t: 'jorguinBlock', target: name }));
-    createProxBtn(actions, '⚔️ Atacar', () => wsSend({ t: 'jorguinAttack', target: name }));
-  } else if (role === 'spy') {
-    createProxBtn(actions, '👁️ Espiar', () => wsSend({ t: 'spyInvestigate', target: name }));
-    createProxBtn(actions, '🔪 Atacar', () => wsSend({ t: 'spyAttack', target: name }));
-  } else if (role === 'psychic') {
-    createProxBtn(actions, '🧊 Congelar', () => wsSend({ t: 'freezePlayer', target: name }));
-    createProxBtn(actions, '💀 Exterminar', () => wsSend({ t: 'exterminatePlayer', target: name }));
-  } else if (role === 'bodyguard') {
-    const btn = createProxBtn(actions, '🛡️ Proteger', () => {
-      if (guardState.protecting === name) {
-        guardState.protecting = null;
-        wsSend({ t: 'protect', target: null });
-      } else {
-        guardState.protecting = name;
-        wsSend({ t: 'protect', target: name });
-      }
-    });
-    if (guardState.protecting === name) btn.classList.add('active');
-  }
+  const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+  const buttons = getActionButtonsForRole(myRole, name);
+  buttons.forEach(btn => actions.appendChild(btn));
 }
 
 function createProxBtn(container, text, onclick) {
@@ -1668,8 +1641,6 @@ function openProfileModal(targetName) {
   if (!modal) return;
   
   const player = playersMap[targetName] || {};
-  const myRole = rolesByName[meName] || 'innocent';
-  
   $('#flee-profile-avatar').src = player.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(targetName)}`;
   $('#flee-profile-name').textContent = targetName;
   $('#flee-profile-desc').textContent = player.description || '';
@@ -1697,11 +1668,6 @@ function openProfileModal(targetName) {
   
   const actionsEl = $('#flee-profile-actions');
   actionsEl.innerHTML = '';
-  
-  if (targetName !== meName && player.alive !== false && currentPhase === 'running' && revealedRoleForMe) {
-    const buttons = getActionButtonsForRole(myRole, targetName);
-    buttons.forEach(btn => actionsEl.appendChild(btn));
-  }
   
   modal.classList.add('active');
 }
