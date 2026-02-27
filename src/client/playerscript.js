@@ -784,7 +784,7 @@ function createStyles(){
 
     .flee-proximity-window {
       background: linear-gradient(145deg, rgba(8,16,30,0.94), rgba(14,24,42,0.92));
-      border: 1px solid rgba(var(--flee-border-rgb),0.55);
+      border: 2px solid rgba(var(--flee-border-rgb),0.55);
       border-radius: 10px;
       padding: 8px 9px;
       display: flex;
@@ -820,7 +820,7 @@ function createStyles(){
     }
     .prox-btn.active { background: #2ecc71; color: white; }
 
-    .flee-notification{background:linear-gradient(145deg,rgba(8,20,38,0.96),rgba(18,37,68,0.93));color:var(--flee-text);padding:10px 12px;border-radius:12px;border:1px solid rgba(var(--flee-border-rgb),0.30);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(6px);opacity:1;transform:translateX(0);transition:opacity 0.22s ease,transform 0.22s ease;animation:toastIn 0.24s ease}
+    .flee-notification{background:linear-gradient(145deg,rgba(8,20,38,0.96),rgba(18,37,68,0.93));color:var(--flee-text);padding:10px 12px;border-radius:12px;border:2px solid rgba(var(--flee-border-rgb),0.34);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(6px);opacity:1;transform:translateX(0);transition:opacity 0.22s ease,transform 0.22s ease;animation:toastIn 0.24s ease}
     .notif-avatar{width:34px;height:34px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;flex:0 0 34px}
     .notif-text{line-height:1.25;font-size:13px;word-break:break-word}
 
@@ -999,10 +999,10 @@ function createStyles(){
     #flee-profile-status{font-size:14px;margin-bottom:20px}
     #flee-profile-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:15px}
     
-    .flee-action-btn{padding:8px 12px;border-radius:9px;font-weight:700;font-size:12px;line-height:1;cursor:pointer;border:1px solid transparent;transition:transform 0.16s ease,box-shadow 0.16s ease,filter 0.16s ease,opacity 0.16s ease;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:28px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+    .flee-action-btn{padding:8px 12px;border-radius:9px;font-weight:700;font-size:12px;line-height:1;cursor:pointer;border:1px solid rgba(var(--flee-border-rgb),0.45);background:linear-gradient(135deg,rgba(29,44,70,0.95),rgba(18,30,50,0.92));color:var(--flee-text);transition:transform 0.16s ease,box-shadow 0.16s ease,filter 0.16s ease,opacity 0.16s ease;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:28px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
     .flee-action-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 14px rgba(0,0,0,0.35);filter:saturate(1.1)}
     .flee-action-btn.is-pressed:not(:disabled){transform:translateY(0);box-shadow:0 2px 6px rgba(0,0,0,0.35);filter:brightness(0.96)}
-    .flee-action-btn:disabled{opacity:0.46;cursor:not-allowed;filter:grayscale(0.2);box-shadow:none;transform:none}
+    .flee-action-btn:disabled{opacity:0.58;cursor:not-allowed;filter:saturate(0.7);box-shadow:none;transform:none;border-color:rgba(var(--flee-border-rgb),0.45)}
     .flee-action-btn.attack{background:linear-gradient(135deg,#ff4444,#cc3333);color:white;border-color:#ff6666}
     .flee-action-btn.heal{background:linear-gradient(135deg,#44ff88,#27ae60);color:white;border-color:#56d364}
     .flee-action-btn.investigate{background:linear-gradient(135deg,#ffcc00,#f39c12);color:#333;border-color:#ffd700}
@@ -1013,6 +1013,10 @@ function createStyles(){
     .flee-action-btn.shoot{background:linear-gradient(135deg,#8b4513,#654321);color:white;border-color:#a0522d}
     .flee-action-btn.build{background:linear-gradient(135deg,#a0522d,#8b4513);color:white;border-color:#cd853f}
     .flee-action-btn.joker{background:linear-gradient(135deg,#aa66ff,#8a2be2);color:white;border-color:#bb77ff}
+    .flee-action-btn.block{background:linear-gradient(135deg,#6b2f90,#4b1f69);color:white;border-color:#8d52b0}
+    .flee-action-btn.jorguin_attack{background:linear-gradient(135deg,#552233,#381522);color:white;border-color:#7f3a54}
+    .flee-action-btn.spy_investigate{background:linear-gradient(135deg,#5b6d7d,#3f4d59);color:white;border-color:#7f94a8}
+    .flee-action-btn.spy_attack{background:linear-gradient(135deg,#2c3e50,#1f2b38);color:white;border-color:#4e6a85}
     .flee-proximity-window .flee-action-btn{min-height:24px;padding:6px 9px;font-size:11px;border-radius:8px}
     
     #flee-joker-floating{position:fixed;left:12px;bottom:78px;z-index:100700;padding:10px 14px;border-radius:10px;background:linear-gradient(135deg,#9b59b6,#8e44ad);color:#fff;border:2px solid rgba(0,0,0,0.2);cursor:pointer;font-weight:900;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.45);transition:all 0.3s}
