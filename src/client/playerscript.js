@@ -29,7 +29,7 @@ let revealedRoleForMe = false;
 let diedOnce = false;
 let lastInvestigatedTarget = null;
 
-const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenRate: 8, drainRate: 20 };
+const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenRate: 9.6, drainRate: 24 };
 
 let proximityWindows = {}; // { targetName: { element, lastUpdate } }
 const trackedPlayerPositions = {};
@@ -4466,6 +4466,7 @@ function updateBlockedTimer(){
 }
 
 let sprintExhaustedTriggered = false;
+const SPRINT_RECOVERY_THRESHOLD = 30;
 
 function sprintLoop(ts){
   const dt = 0.016;
@@ -4488,6 +4489,9 @@ function sprintLoop(ts){
   
   if (hasSpeedBuff) {
     sprint.value = sprint.max;
+    if (sprint.exhausted || sprintExhaustedTriggered) {
+      window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
+    }
     sprint.exhausted = false;
     sprintExhaustedTriggered = false;
   } else if (sprint.draining && sprint.value > 0) {
@@ -4510,10 +4514,10 @@ function sprintLoop(ts){
     }
     if (sprint.value < sprint.max) {
       sprint.value = Math.min(sprint.max, sprint.value + (sprint.regenRate * dt));
-      if (sprint.value >= sprint.max) {
+      if (sprint.exhausted && sprint.value >= SPRINT_RECOVERY_THRESHOLD) {
         sprint.exhausted = false;
         sprintExhaustedTriggered = false;
-        // Unblock sprint in radar
+        // Unblock sprint in radar after minimum recovery threshold
         window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
       }
     }
@@ -4524,10 +4528,18 @@ function sprintLoop(ts){
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Shift' && !sprint.exhausted && !frozen && !abilityBlocked) {
-    sprint.draining = true;
+  if (e.key === 'Shift') {
+    if (sprint.exhausted || sprint.value <= 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      sprint.draining = false;
+      return;
+    }
+    if (!frozen && !abilityBlocked) {
+      sprint.draining = true;
+    }
   }
-});
+}, true);
 
 window.addEventListener('keyup', (e) => {
   if (e.key === 'Shift') {
