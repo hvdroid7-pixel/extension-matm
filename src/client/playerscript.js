@@ -244,6 +244,10 @@ function isJorguinCurseActive() {
   return controlLockState.jorguinCurseUntil > Date.now();
 }
 
+function isPsychicFreezeActive() {
+  return controlLockState.psychicFrozenUntil > Date.now();
+}
+
 function forceSprintExhaustedLock() {
   sprint.value = 0;
   sprint.exhausted = true;
@@ -259,6 +263,12 @@ function forceSprintExhaustedLock() {
 
 function syncControlLockState() {
   const curseActive = isJorguinCurseActive();
+  const freezeActive = isPsychicFreezeActive();
+
+  if (freezeActive) {
+    sprint.draining = false;
+    window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: true }, '*');
+  }
 
   if (curseActive) {
     if (!controlLockState.sprintForcedByCurse) {
@@ -268,6 +278,10 @@ function syncControlLockState() {
     }
   } else {
     controlLockState.sprintForcedByCurse = false;
+  }
+
+  if (!freezeActive && !curseActive && !sprint.exhausted) {
+    window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
   }
 }
 
@@ -335,8 +349,8 @@ function startItemUse(itemId) {
   const info = ITEM_INFO[itemId];
   if (!info || info.type !== 'active') return;
 
-  if (isJorguinCurseActive()) {
-    showNotification('⛔ Hechizado: no puedes usar objetos', 2000);
+  if (isJorguinCurseActive() || isPsychicFreezeActive()) {
+    showNotification('⛔ Bloqueado: no puedes usar objetos', 2000);
     return;
   }
   
@@ -497,6 +511,31 @@ function updateHourglassTimer() {
   setTimeout(updateHourglassTimer, 100);
 }
 
+let exterminateTimerState = { active: false, end: 0, target: '', attacker: '' };
+
+function updateExterminateTimerUI() {
+  const timerEl = $('#flee-exterminate-timer');
+  if (!timerEl) return;
+
+  if (!exterminateTimerState.active) {
+    timerEl.style.display = 'none';
+    return;
+  }
+
+  const remaining = Math.max(0, Math.ceil((exterminateTimerState.end - Date.now()) / 1000));
+  const targetInfo = exterminateTimerState.target ? ` ${exterminateTimerState.target}` : '';
+  timerEl.style.display = 'block';
+  timerEl.textContent = `💀 Exterminar${targetInfo}: ${remaining}s`;
+
+  if (remaining <= 0) {
+    exterminateTimerState.active = false;
+    timerEl.style.display = 'none';
+    return;
+  }
+
+  setTimeout(updateExterminateTimerUI, 200);
+}
+
 let currentLobby = null;
 let lobbyList = [];
 let currentScreen = 'lobby';
@@ -505,7 +544,7 @@ let frozen = false;
 let frozenUntil = 0;
 let abilityBlocked = false;
 let abilityBlockedUntil = 0;
-const controlLockState = { jorguinCurseUntil: 0, sprintForcedByCurse: false };
+const controlLockState = { jorguinCurseUntil: 0, psychicFrozenUntil: 0, sprintForcedByCurse: false };
 let detectiveSpeedBuff = false;
 let detectiveSpeedBuffUntil = 0;
 
@@ -3177,7 +3216,10 @@ function resetGameState() {
   distractionActive = false;
   revealedRoleForMe = false;
   controlLockState.jorguinCurseUntil = 0;
+  controlLockState.psychicFrozenUntil = 0;
   controlLockState.sprintForcedByCurse = false;
+  exterminateTimerState.active = false;
+  updateExterminateTimerUI();
   window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
@@ -3438,6 +3480,11 @@ function createUI(){
   blockedOverlay.id = 'flee-blocked-overlay';
   blockedOverlay.innerHTML = '<div id="flee-blocked-msg"><div id="flee-blocked-timer">0s</div><div>⛔ Hechizado - Habilidades bloqueadas</div></div>';
   document.body.appendChild(blockedOverlay);
+
+  const exterminateTimer = document.createElement('div');
+  exterminateTimer.id = 'flee-exterminate-timer';
+  exterminateTimer.style.display = 'none';
+  document.body.appendChild(exterminateTimer);
   
   const readyOverlay = document.createElement('div');
   readyOverlay.id = 'flee-ready-overlay';
@@ -4243,10 +4290,24 @@ function handleWsMessage(msg){
     case 'frozen':
       frozen = true;
       frozenUntil = Date.now() + msg.duration;
+      controlLockState.psychicFrozenUntil = frozenUntil;
+      syncControlLockState();
       $('#flee-frozen-overlay').style.display = 'flex';
       simulateKeyJ();
       setTimeout(() => clickPlayButton(), 150);
       updateFrozenTimer();
+      break;
+    case 'exterminateTimer':
+      exterminateTimerState = {
+        active: true,
+        end: msg.end || (Date.now() + 60000),
+        target: msg.target || '',
+        attacker: msg.attacker || ''
+      };
+      updateExterminateTimerUI();
+      break;
+    case 'notification':
+      showNotification(msg.msg || msg.message || 'Aviso', 4000);
       break;
     case 'abilityBlocked':
       abilityBlocked = true;
@@ -4480,6 +4541,8 @@ function updateFrozenTimer(){
   
   if (remaining <= 0) {
     frozen = false;
+    controlLockState.psychicFrozenUntil = 0;
+    syncControlLockState();
     $('#flee-frozen-overlay').style.display = 'none';
   } else {
     setTimeout(updateFrozenTimer, 100);
@@ -4586,7 +4649,7 @@ function sprintLoop(ts){
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Shift') {
-    if (isJorguinCurseActive() || sprint.exhausted || sprint.value <= 0) {
+    if (isJorguinCurseActive() || isPsychicFreezeActive() || sprint.exhausted || sprint.value <= 0) {
       e.preventDefault();
       e.stopPropagation();
       sprint.draining = false;

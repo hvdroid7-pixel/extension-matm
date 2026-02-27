@@ -146,6 +146,12 @@ class Game {
     const player = this.players.get(targetName);
     if (!player || !player.alive) return;
 
+    const existing = this.exterminateTimers.get(targetName);
+    if (existing) {
+      clearTimeout(existing);
+      this.exterminateTimers.delete(targetName);
+    }
+
     const duration = 60000; // 1 minute
     const endTimestamp = Date.now() + duration;
 
@@ -153,14 +159,16 @@ class Game {
     this.sendTo(targetName, { t: 'exterminateTimer', attacker: attackerName, end: endTimestamp });
 
     const timer = setTimeout(() => {
+      this.exterminateTimers.delete(targetName);
       if (this.phase !== 'running' || this.gameEnded) return;
       const p = this.players.get(targetName);
       if (p && p.alive) {
         p.alive = false;
         p.health = 0;
-        this.broadcast({ t: 'playerDied', name: targetName, killer: attackerName, reason: 'exterminated' });
+        this.broadcast({ t: 'playerDied', name: targetName, killer: attackerName, reason: 'exterminated', method: 'exterminate_timer' });
         this.sendTo(attackerName, { t: 'notification', msg: `💀 ${targetName} ha sido exterminado` });
-        this.checkVictoryConditions();
+        const victory = this.checkVictoryConditions();
+        if (victory) this.endGame(victory.winner, victory.reason);
         broadcastPlayersUpdate(this);
       }
     }, duration);
@@ -634,6 +642,18 @@ wss.on('connection', (ws) => {
 
 function handleMessage(ws, clientId, msg) {
   const client = clients.get(clientId);
+
+  const frozenLockedActions = new Set(['attack','heal','investigate','distract','useItem','freezePlayer','exterminatePlayer','revealRole','sheriffShoot','jorguinBlock','jorguinAttack','spyInvestigate','spyAttack','carpenterBuild']);
+  if (client && client.gameId && frozenLockedActions.has(msg.t)) {
+    const game = games.get(client.gameId);
+    const player = game ? game.players.get(client.name) : null;
+    if (player && player.frozen && player.frozenUntil > Date.now()) {
+      try {
+        client.ws.send(JSON.stringify({ t: 'error', message: 'Estás congelado: controles bloqueados' }));
+      } catch (e) {}
+      return;
+    }
+  }
   
   switch (msg.t) {
     case 'register':
@@ -1658,20 +1678,7 @@ function handleExterminatePlayer(client, msg) {
   if (!target || !target.alive) return;
   
   player.usedExterminate = true;
-  target.health = 0;
-  target.alive = false;
-  
-  game.broadcast({
-    t: 'playerDied',
-    name: msg.target,
-    killer: client.name,
-    method: 'exterminate'
-  });
-  
-  const victory = game.checkVictoryConditions();
-  if (victory) {
-    game.endGame(victory.winner, victory.reason);
-  }
+  game.handleExterminate(client.name, msg.target);
 }
 
 function handleRevealRole(client, msg) {
