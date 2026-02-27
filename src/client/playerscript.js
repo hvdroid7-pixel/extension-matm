@@ -261,7 +261,7 @@ function showProximityWindow(name, p) {
   actions.innerHTML = '';
   win.actionsSignature = signature;
 
-  if (abilityBlocked) return;
+  if (abilityBlocked || frozen || isPsychicFreezeActive()) return;
 
   const buttons = getActionButtonsForRole(myRole, name);
   buttons.forEach(btn => actions.appendChild(btn));
@@ -736,6 +736,80 @@ const custom = {
   text: sanitizeHexColor(localStorage.getItem('flee_custom_text'), DEFAULT_CUSTOM_THEME.text)
 };
 
+const THEME_STORAGE_KEY = 'flee_theme_modules_v1';
+const THEME_MODULE_ORDER = ['userPanel', 'proximity', 'startup', 'radar', 'notifications'];
+const THEME_DEFAULTS = {
+  bg: '#000000',
+  border: '#ffffff',
+  text: '#ffffff',
+  internal: '#ffffff',
+  gradient: '#808080'
+};
+
+function normalizeThemeModule(data = {}) {
+  return {
+    bg: sanitizeHexColor(data.bg, THEME_DEFAULTS.bg),
+    border: sanitizeHexColor(data.border, THEME_DEFAULTS.border),
+    text: sanitizeHexColor(data.text, THEME_DEFAULTS.text),
+    internal: sanitizeHexColor(data.internal, THEME_DEFAULTS.internal),
+    gradient: sanitizeHexColor(data.gradient, THEME_DEFAULTS.gradient)
+  };
+}
+
+const ThemeManager = {
+  modules: {},
+  load() {
+    let parsed = {};
+    try {
+      parsed = JSON.parse(localStorage.getItem(THEME_STORAGE_KEY) || '{}') || {};
+    } catch (e) {
+      parsed = {};
+    }
+    THEME_MODULE_ORDER.forEach((moduleKey) => {
+      this.modules[moduleKey] = normalizeThemeModule(parsed[moduleKey]);
+    });
+  },
+  save() {
+    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(this.modules));
+  },
+  get(moduleKey) {
+    return normalizeThemeModule(this.modules[moduleKey]);
+  },
+  set(moduleKey, patch) {
+    this.modules[moduleKey] = normalizeThemeModule({ ...this.get(moduleKey), ...patch });
+    this.applyModule(moduleKey);
+  },
+  reset(moduleKey) {
+    this.modules[moduleKey] = normalizeThemeModule(THEME_DEFAULTS);
+    this.applyModule(moduleKey);
+  },
+  copyFromPrevious(moduleKey) {
+    const idx = THEME_MODULE_ORDER.indexOf(moduleKey);
+    if (idx <= 0) return;
+    const prevKey = THEME_MODULE_ORDER[idx - 1];
+    this.modules[moduleKey] = normalizeThemeModule(this.get(prevKey));
+    this.applyModule(moduleKey);
+  },
+  applyModule(moduleKey) {
+    const t = this.get(moduleKey);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-bg`, t.bg);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-border`, t.border);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-text`, t.text);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-internal`, t.internal);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-gradient`, t.gradient);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-bg-rgb`, hexToRgb(t.bg));
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-border-rgb`, hexToRgb(t.border));
+    if (moduleKey === 'radar') {
+      window.postMessage({ source: 'radar-admin', type: 'themeUpdate', theme: t }, '*');
+    }
+  },
+  applyAll() {
+    THEME_MODULE_ORDER.forEach((k) => this.applyModule(k));
+  }
+};
+ThemeManager.load();
+
+
 function setCssVarsForCustom(bg, op, border, text){
   const rgba = hexToRgba(bg, op);
   document.documentElement.style.setProperty('--flee-bg-rgba', rgba);
@@ -774,17 +848,42 @@ function createStyles(){
       --flee-border-rgb: ${hexToRgb(custom.border)};
       --flee-text-rgb: ${hexToRgb(custom.text)};
       --flee-bg-rgb: ${hexToRgb(custom.bg)};
+      --flee-theme-userPanel-bg: ${ThemeManager.get('userPanel').bg};
+      --flee-theme-userPanel-border: ${ThemeManager.get('userPanel').border};
+      --flee-theme-userPanel-text: ${ThemeManager.get('userPanel').text};
+      --flee-theme-userPanel-internal: ${ThemeManager.get('userPanel').internal};
+      --flee-theme-userPanel-gradient: ${ThemeManager.get('userPanel').gradient};
+      --flee-theme-proximity-bg: ${ThemeManager.get('proximity').bg};
+      --flee-theme-proximity-border: ${ThemeManager.get('proximity').border};
+      --flee-theme-proximity-text: ${ThemeManager.get('proximity').text};
+      --flee-theme-proximity-internal: ${ThemeManager.get('proximity').internal};
+      --flee-theme-proximity-gradient: ${ThemeManager.get('proximity').gradient};
+      --flee-theme-startup-bg: ${ThemeManager.get('startup').bg};
+      --flee-theme-startup-border: ${ThemeManager.get('startup').border};
+      --flee-theme-startup-text: ${ThemeManager.get('startup').text};
+      --flee-theme-startup-internal: ${ThemeManager.get('startup').internal};
+      --flee-theme-startup-gradient: ${ThemeManager.get('startup').gradient};
+      --flee-theme-radar-bg: ${ThemeManager.get('radar').bg};
+      --flee-theme-radar-border: ${ThemeManager.get('radar').border};
+      --flee-theme-radar-text: ${ThemeManager.get('radar').text};
+      --flee-theme-radar-internal: ${ThemeManager.get('radar').internal};
+      --flee-theme-radar-gradient: ${ThemeManager.get('radar').gradient};
+      --flee-theme-notifications-bg: ${ThemeManager.get('notifications').bg};
+      --flee-theme-notifications-border: ${ThemeManager.get('notifications').border};
+      --flee-theme-notifications-text: ${ThemeManager.get('notifications').text};
+      --flee-theme-notifications-internal: ${ThemeManager.get('notifications').internal};
+      --flee-theme-notifications-gradient: ${ThemeManager.get('notifications').gradient};
     }
     
-    #flee-lobby-screen{position:fixed;inset:0;z-index:100000;background:linear-gradient(135deg,var(--flee-bg-solid),rgba(var(--flee-border-rgb),0.20));display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui}
+    #flee-lobby-screen{position:fixed;inset:0;z-index:100000;background:linear-gradient(135deg,var(--flee-theme-startup-bg),var(--flee-theme-startup-gradient));display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui}
     
     #flee-notifications-container {position: fixed;top: 20px;right: 20px;z-index: 100030;display:flex;flex-direction:column;gap:12px;pointer-events:none;max-width:320px}
     #flee-proximity-stack{display:flex;flex-direction:column;gap:10px;order:1}
     #flee-toast-stack{display:flex;flex-direction:column;gap:10px;order:2}
 
     .flee-proximity-window {
-      background: linear-gradient(145deg, rgba(8,16,30,0.94), rgba(14,24,42,0.92));
-      border: 2px solid rgba(var(--flee-border-rgb),0.55);
+      background: linear-gradient(145deg, var(--flee-theme-proximity-bg), var(--flee-theme-proximity-gradient));
+      border: 2px solid var(--flee-theme-proximity-border);
       border-radius: 10px;
       padding: 8px 9px;
       display: flex;
@@ -792,7 +891,7 @@ function createStyles(){
       gap: 9px;
       min-width: 188px;
       pointer-events: auto;
-      color: var(--flee-text);
+      color: var(--flee-theme-proximity-text);
       box-shadow: 0 10px 24px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.06);
       transform-origin: top right;
       animation: slideIn 0.2s ease;
@@ -820,11 +919,11 @@ function createStyles(){
     }
     .prox-btn.active { background: #2ecc71; color: white; }
 
-    .flee-notification{background:linear-gradient(145deg,rgba(8,20,38,0.96),rgba(18,37,68,0.93));color:var(--flee-text);padding:10px 12px;border-radius:12px;border:2px solid rgba(var(--flee-border-rgb),0.34);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(6px);opacity:1;transform:translateX(0);transition:opacity 0.22s ease,transform 0.22s ease;animation:toastIn 0.24s ease}
+    .flee-notification{background:linear-gradient(145deg,var(--flee-theme-notifications-bg),var(--flee-theme-notifications-gradient));color:var(--flee-theme-notifications-text);padding:10px 12px;border-radius:12px;border:2px solid var(--flee-theme-notifications-border);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(6px);opacity:1;transform:translateX(0);transition:opacity 0.22s ease,transform 0.22s ease;animation:toastIn 0.24s ease}
     .notif-avatar{width:34px;height:34px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;flex:0 0 34px}
     .notif-text{line-height:1.25;font-size:13px;word-break:break-word}
 
-    #flee-lobby-container{width:90%;max-width:1200px;background:rgba(10,22,40,0.95);border:2px solid var(--flee-border);border-radius:20px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,0.7)}
+    #flee-lobby-container{width:90%;max-width:1200px;background:var(--flee-theme-startup-bg);border:2px solid var(--flee-theme-startup-border);border-radius:20px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,0.7)}
     #flee-lobby-header{text-align:center;margin-bottom:30px}
     #flee-lobby-header h1{font-size:48px;font-weight:900;color:var(--flee-border);margin:0;text-shadow:0 4px 20px rgba(var(--flee-border-rgb),0.55)}
     #flee-lobby-nav{display:flex;gap:15px;justify-content:center;margin-bottom:30px}
@@ -873,7 +972,7 @@ function createStyles(){
     .flee-save-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(var(--flee-border-rgb),0.5);background:linear-gradient(135deg,rgba(var(--flee-border-rgb),0.85),rgba(var(--flee-text-rgb),0.55))}
     
     #flee-ui{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:99999;font-family:Inter,system-ui,Arial}
-    #flee-box{background:var(--flee-bg-rgba);border:2px solid var(--flee-border);border-radius:10px;padding:10px;width:420px;color:var(--flee-text);box-shadow:0 8px 30px rgba(0,0,0,0.6);position:relative;cursor:grab;user-select:none}
+    #flee-box{background:var(--flee-theme-userPanel-bg);border:2px solid var(--flee-theme-userPanel-border);border-radius:10px;padding:10px;width:420px;color:var(--flee-theme-userPanel-text);box-shadow:0 8px 30px rgba(0,0,0,0.6);position:relative;cursor:grab;user-select:none}
     #flee-role{display:block;text-align:center;font-weight:800;margin-bottom:8px;font-size:18px}
     #flee-health{width:90%;height:24px;background:#222;border-radius:8px;margin:0 auto;overflow:hidden;border:1px solid rgba(255,255,255,0.06)}
     #flee-health-inner{height:100%;width:100%;background:linear-gradient(90deg,#2ecc71,#45c35f);transition:width .25s ease;display:flex;align-items:center;justify-content:center;font-weight:700}
@@ -999,7 +1098,7 @@ function createStyles(){
     #flee-profile-status{font-size:14px;margin-bottom:20px}
     #flee-profile-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:15px}
     
-    .flee-action-btn{padding:8px 12px;border-radius:9px;font-weight:700;font-size:12px;line-height:1;cursor:pointer;border:1px solid rgba(var(--flee-border-rgb),0.45);background:linear-gradient(135deg,rgba(29,44,70,0.95),rgba(18,30,50,0.92));color:var(--flee-text);transition:transform 0.16s ease,box-shadow 0.16s ease,filter 0.16s ease,opacity 0.16s ease;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:28px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+    .flee-action-btn{padding:8px 12px;border-radius:9px;font-weight:700;font-size:12px;line-height:1;cursor:pointer;border:1px solid rgba(var(--flee-border-rgb),0.45);background:linear-gradient(135deg,var(--flee-theme-proximity-internal),var(--flee-theme-proximity-gradient));color:var(--flee-theme-proximity-text);transition:transform 0.16s ease,box-shadow 0.16s ease,filter 0.16s ease,opacity 0.16s ease;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:28px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
     .flee-action-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 14px rgba(0,0,0,0.35);filter:saturate(1.1)}
     .flee-action-btn.is-pressed:not(:disabled){transform:translateY(0);box-shadow:0 2px 6px rgba(0,0,0,0.35);filter:brightness(0.96)}
     .flee-action-btn:disabled{opacity:0.58;cursor:not-allowed;filter:saturate(0.7);box-shadow:none;transform:none;border-color:rgba(var(--flee-border-rgb),0.45)}
@@ -1124,6 +1223,64 @@ function createStyles(){
   document.head.appendChild(style);
 }
 
+function buildThemeSection(moduleKey, title) {
+  const t = ThemeManager.get(moduleKey);
+  return `
+    <div class="flee-theme-section" data-theme-module="${moduleKey}" style="background:rgba(255,255,255,0.04);border:1px solid rgba(var(--flee-border-rgb),0.25);border-radius:10px;padding:12px">
+      <h3 style="margin:0 0 10px 0;color:var(--flee-text)">${title}</h3>
+      <label style="display:block;color:var(--flee-text)">Fondo <input type="color" data-prop="bg" value="${t.bg}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Texto <input type="color" data-prop="text" value="${t.text}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Borde <input type="color" data-prop="border" value="${t.border}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Interno <input type="color" data-prop="internal" value="${t.internal}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Gradient <input type="color" data-prop="gradient" value="${t.gradient}" style="float:right"></label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+        <button class="flee-small" data-theme-action="reset">Restablecer por defecto</button>
+        <button class="flee-small" data-theme-action="copy">Utilizar misma personalización que la anterior</button>
+        <button class="flee-small" data-theme-action="save" style="background:var(--flee-border);color:var(--flee-bg-solid)">Guardar</button>
+      </div>
+    </div>
+  `;
+}
+
+function setupThemeManagerUI() {
+  const root = $('#flee-theme-manager-sections');
+  if (!root || root.dataset.bound === '1') return;
+  const modules = [
+    ['userPanel', '1. Panel de usuario'],
+    ['proximity', '2. Ventanas de proximidad'],
+    ['startup', '3. Interfaz de inicio'],
+    ['radar', '4. Radar'],
+    ['notifications', '5. Notificaciones']
+  ];
+  root.innerHTML = modules.map(([k, t]) => buildThemeSection(k, t)).join('');
+  root.dataset.bound = '1';
+
+  root.addEventListener('input', (ev) => {
+    const input = ev.target;
+    if (!input.matches('input[type="color"][data-prop]')) return;
+    const section = input.closest('[data-theme-module]');
+    if (!section) return;
+    ThemeManager.set(section.dataset.themeModule, { [input.dataset.prop]: input.value });
+  });
+
+  root.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-theme-action]');
+    if (!btn) return;
+    const section = btn.closest('[data-theme-module]');
+    if (!section) return;
+    const moduleKey = section.dataset.themeModule;
+    const action = btn.dataset.themeAction;
+    if (action === 'reset') ThemeManager.reset(moduleKey);
+    if (action === 'copy') ThemeManager.copyFromPrevious(moduleKey);
+    if (action === 'save') ThemeManager.save();
+
+    const t = ThemeManager.get(moduleKey);
+    section.querySelectorAll('input[data-prop]').forEach((inp) => {
+      inp.value = t[inp.dataset.prop] || THEME_DEFAULTS[inp.dataset.prop];
+    });
+  });
+}
+
 function createLobbyScreen(){
   const screen = document.createElement('div');
   screen.id = 'flee-lobby-screen';
@@ -1137,6 +1294,7 @@ function createLobbyScreen(){
         <button class="flee-nav-btn" data-tab="create">Crear Partida</button>
         <button class="flee-nav-btn" data-tab="profile">Editar Perfil</button>
         <button class="flee-nav-btn" data-tab="roles">Información de Roles</button>
+        <button class="flee-nav-btn" data-tab="personalization">Personalización</button>
       </div>
       <div id="flee-lobby-content">
         <div id="flee-join-lobby" class="flee-tab-content active">
@@ -1366,6 +1524,10 @@ function createLobbyScreen(){
             <button id="save-profile-btn" class="flee-save-btn">💾 Guardar Perfil</button>
           </div>
         </div>
+        <div id="flee-personalization-lobby" class="flee-tab-content" style="display:none">
+          <h2 style="color:var(--flee-text);text-align:center">Personalización</h2>
+          <div id="flee-theme-manager-sections" style="max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px"></div>
+        </div>
         <div id="flee-roles-info" class="flee-tab-content" style="display:none">
           <h2 style="color:var(--flee-text);text-align:center">Información de Roles</h2>
           <div style="max-width:800px;max-height:500px;overflow-y:auto;margin:0 auto;color:var(--flee-text);line-height:1.6;padding:0 10px">
@@ -1415,6 +1577,8 @@ function createLobbyScreen(){
     </div>
   `;
   document.body.appendChild(screen);
+  setupThemeManagerUI();
+  ThemeManager.applyAll();
   
   $all('.flee-nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1650,6 +1814,8 @@ function createWaitingRoomScreen(){
     </div>
   `;
   document.body.appendChild(screen);
+  setupThemeManagerUI();
+  ThemeManager.applyAll();
   
   $('#flee-start-game-btn').addEventListener('click', () => {
     if (currentLobby && currentLobby.creatorName === meName) {
@@ -4902,6 +5068,7 @@ window.addEventListener('keydown', (e) => {
 }, true);
 
 function initAll(){
+  ThemeManager.applyAll();
   createStyles();
   createLobbyScreen();
   createToggleLobbyButton();
