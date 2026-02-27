@@ -34,19 +34,67 @@ const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenR
 let proximityWindows = {}; // { targetName: { element, lastUpdate } }
 const trackedPlayerPositions = {};
 
+function ensureNotificationsContainer() {
+  let container = $('#flee-notifications-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'flee-notifications-container';
+    container.innerHTML = `
+      <div id="flee-proximity-stack"></div>
+      <div id="flee-toast-stack"></div>
+    `;
+    document.body.appendChild(container);
+  } else {
+    if (!$('#flee-proximity-stack', container)) {
+      const prox = document.createElement('div');
+      prox.id = 'flee-proximity-stack';
+      container.prepend(prox);
+    }
+    if (!$('#flee-toast-stack', container)) {
+      const toast = document.createElement('div');
+      toast.id = 'flee-toast-stack';
+      container.appendChild(toast);
+    }
+  }
+  return container;
+}
+
+function getProximityStack() {
+  const container = ensureNotificationsContainer();
+  return $('#flee-proximity-stack', container) || container;
+}
+
+function getToastStack() {
+  const container = ensureNotificationsContainer();
+  return $('#flee-toast-stack', container) || container;
+}
+
+function findMentionedPlayerName(message) {
+  if (!message) return null;
+  const msg = String(message).toLowerCase();
+  const names = new Set([meName, ...Object.keys(playersMap)]);
+  for (const name of names) {
+    if (!name) continue;
+    if (msg.includes(String(name).toLowerCase())) return name;
+  }
+  return null;
+}
+
+function getAvatarForPlayer(name) {
+  if (!name) return '';
+  if (name === meName && meAvatarData) return meAvatarData;
+  const p = playersMap[name];
+  if (p && p.avatarUrl) return p.avatarUrl;
+  return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}`;
+}
+
 function createProximitySystem() {
   const BASE_THRESHOLD = 0.12;
   const EXTENDED_THRESHOLD = 0.25;
   let checkInterval = null;
 
   function getContainer() {
-    let container = $('#flee-notifications-container');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'flee-notifications-container';
-      document.body.appendChild(container);
-    }
-    return container;
+    return getProximityStack();
   }
 
   function getDetectionThreshold(targetName) {
@@ -588,16 +636,9 @@ function createStyles(){
     
     #flee-lobby-screen{position:fixed;inset:0;z-index:100000;background:linear-gradient(135deg,#0a1628,#1a2642);display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui}
     
-    #flee-notifications-container {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 100030;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      pointer-events: none;
-    }
+    #flee-notifications-container {position: fixed;top: 20px;right: 20px;z-index: 100030;display:flex;flex-direction:column;gap:12px;pointer-events:none;max-width:320px}
+    #flee-proximity-stack{display:flex;flex-direction:column;gap:10px;order:1}
+    #flee-toast-stack{display:flex;flex-direction:column;gap:10px;order:2}
 
     .flee-proximity-window {
       background: rgba(0,0,0,0.85);
@@ -628,21 +669,9 @@ function createStyles(){
     }
     .prox-btn.active { background: #2ecc71; color: white; }
 
-    .flee-notification {
-      background: rgba(0,0,0,0.9);
-      color: var(--flee-text);
-      padding: 12px 18px;
-      border-radius: 10px;
-      border-left: 5px solid var(--flee-border);
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      pointer-events: auto;
-      animation: slideIn 0.3s ease;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-    }
-    .notif-avatar { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--flee-border); }
+    .flee-notification{background:linear-gradient(135deg,rgba(8,20,38,0.95),rgba(18,37,68,0.92));color:var(--flee-text);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,0.15);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;animation:slideIn 0.25s ease;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(4px)}
+    .notif-avatar{width:34px;height:34px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;flex:0 0 34px}
+    .notif-text{line-height:1.25;font-size:13px;word-break:break-word}
 
     #flee-lobby-container{width:90%;max-width:1200px;background:rgba(10,22,40,0.95);border:2px solid var(--flee-border);border-radius:20px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,0.7)}
     #flee-lobby-header{text-align:center;margin-bottom:30px}
@@ -3749,20 +3778,28 @@ let activeNotifications = [];
 function showNotification(message, duration = 3000){
   const notif = document.createElement('div');
   notif.className = 'flee-notification';
-  notif.textContent = message;
-  
-  const topOffset = 20 + (activeNotifications.length * 60);
-  notif.style.top = topOffset + 'px';
-  
-  document.body.appendChild(notif);
+
+  const mentionedPlayer = findMentionedPlayerName(message);
+  if (mentionedPlayer) {
+    const avatar = document.createElement('img');
+    avatar.className = 'notif-avatar';
+    avatar.src = getAvatarForPlayer(mentionedPlayer);
+    avatar.alt = mentionedPlayer;
+    notif.appendChild(avatar);
+  }
+
+  const text = document.createElement('div');
+  text.className = 'notif-text';
+  text.textContent = message;
+  notif.appendChild(text);
+
+  const stack = getToastStack();
+  stack.appendChild(notif);
   activeNotifications.push(notif);
-  
+
   setTimeout(() => {
     notif.remove();
     activeNotifications = activeNotifications.filter(n => n !== notif);
-    activeNotifications.forEach((n, i) => {
-      n.style.top = (20 + i * 60) + 'px';
-    });
   }, duration);
 }
 
@@ -4680,6 +4717,7 @@ function initAll(){
   createToggleLobbyButton();
   createWaitingRoomScreen();
   createUI();
+  ensureNotificationsContainer();
   proximitySystem.start();
   wsConnect();
   requestAnimationFrame(sprintLoop);
