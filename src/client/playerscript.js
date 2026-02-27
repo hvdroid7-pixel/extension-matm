@@ -29,88 +29,242 @@ let revealedRoleForMe = false;
 let diedOnce = false;
 let lastInvestigatedTarget = null;
 
-const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenRate: 8, drainRate: 20 };
+const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenRate: 9.6, drainRate: 24 };
 
 let proximityWindows = {}; // { targetName: { element, lastUpdate } }
+const trackedPlayerPositions = {};
+
+function ensureNotificationsContainer() {
+  let container = $('#flee-notifications-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'flee-notifications-container';
+    container.innerHTML = `
+      <div id="flee-proximity-stack"></div>
+      <div id="flee-toast-stack"></div>
+    `;
+    document.body.appendChild(container);
+  } else {
+    if (!$('#flee-proximity-stack', container)) {
+      const prox = document.createElement('div');
+      prox.id = 'flee-proximity-stack';
+      container.prepend(prox);
+    }
+    if (!$('#flee-toast-stack', container)) {
+      const toast = document.createElement('div');
+      toast.id = 'flee-toast-stack';
+      container.appendChild(toast);
+    }
+  }
+  return container;
+}
+
+function getProximityStack() {
+  const container = ensureNotificationsContainer();
+  return $('#flee-proximity-stack', container) || container;
+}
+
+function getToastStack() {
+  const container = ensureNotificationsContainer();
+  return $('#flee-toast-stack', container) || container;
+}
+
+function findMentionedPlayerName(message) {
+  if (!message) return null;
+  const msg = String(message).toLowerCase();
+  const names = new Set([meName, ...Object.keys(playersMap)]);
+  for (const name of names) {
+    if (!name) continue;
+    if (msg.includes(String(name).toLowerCase())) return name;
+  }
+  return null;
+}
+
+function getAvatarForPlayer(name) {
+  if (!name) return '';
+  if (name === meName && meAvatarData) return meAvatarData;
+  const p = playersMap[name];
+  if (p && p.avatarUrl) return p.avatarUrl;
+  return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(name)}`;
+}
+
+function createProximitySystem() {
+  const BASE_THRESHOLD = 0.10;
+  const SPECIAL_RANGE_MULTIPLIER = 0.25 / 0.12;
+  const EXTENDED_THRESHOLD = BASE_THRESHOLD * SPECIAL_RANGE_MULTIPLIER;
+  const HYSTERESIS_MARGIN = 0.012;
+  let checkInterval = null;
+
+  function getContainer() {
+    return getProximityStack();
+  }
+
+  function getDetectionThreshold(targetName, hasWindow) {
+    const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+    const base = (myRole === 'sheriff' || (myRole === 'spy' && spyInvestigatedPlayers.includes(targetName)))
+      ? EXTENDED_THRESHOLD
+      : BASE_THRESHOLD;
+    return hasWindow ? (base + HYSTERESIS_MARGIN) : base;
+  }
+
+  function getPlayerPosition(playerName, playerData) {
+    if (playerData && playerData.position && typeof playerData.position.x === 'number' && typeof playerData.position.y === 'number') {
+      return playerData.position;
+    }
+    if (trackedPlayerPositions[playerName]) {
+      return trackedPlayerPositions[playerName];
+    }
+    return null;
+  }
+
+  function showWindow(playerName, playerData) {
+    let win = proximityWindows[playerName];
+    if (!win) {
+      const el = document.createElement('div');
+      el.className = 'flee-proximity-window';
+      el.innerHTML = `
+        <img src="${playerData.avatarUrl || ''}" class="prox-avatar" alt="${escapeHTML(playerName)}">
+        <div class="prox-info">
+          <div class="prox-name">${escapeHTML(playerName)}</div>
+          <div class="prox-health" aria-hidden="true">
+            <div class="prox-health-fill"></div>
+            <span class="prox-health-text">100%</span>
+          </div>
+          <div class="prox-actions" data-player="${escapeHTML(playerName)}"></div>
+        </div>
+      `;
+      getContainer().prepend(el);
+      win = { element: el, actionsSignature: '' };
+      proximityWindows[playerName] = win;
+    }
+
+    if (win.removeTimer) {
+      clearTimeout(win.removeTimer);
+      win.removeTimer = null;
+    }
+    win.element.classList.remove('is-leaving');
+
+    const avatar = win.element.querySelector('.prox-avatar');
+    if (avatar && playerData.avatarUrl) avatar.src = playerData.avatarUrl;
+  }
+
+  function update() {
+    const myPos = window.islandPlayerPos || window._lastKnownPosition;
+    if (!myPos) return;
+
+    Object.entries(playersMap).forEach(([playerName, playerData]) => {
+      if (playerName === meName || !playerData || !playerData.alive || playerData.connected === false) {
+        removeProximityWindow(playerName);
+        return;
+      }
+
+      const targetPos = getPlayerPosition(playerName, playerData);
+      if (!targetPos) {
+        removeProximityWindow(playerName);
+        return;
+      }
+
+      const dist = Math.hypot(targetPos.x - myPos.x, targetPos.y - myPos.y);
+      const threshold = getDetectionThreshold(playerName, !!proximityWindows[playerName]);
+
+      if (dist <= threshold) {
+        showWindow(playerName, playerData);
+        showProximityWindow(playerName, playerData);
+      } else {
+        removeProximityWindow(playerName);
+      }
+    });
+  }
+
+  function start() {
+    if (checkInterval) return;
+    getContainer();
+    checkInterval = setInterval(update, 250);
+  }
+
+  return { start, update };
+}
+
+const proximitySystem = createProximitySystem();
 
 function updateProximityWindows() {
-  const myPos = window.islandPlayerPos || { x: 0.5, y: 0.5 };
-  const entries = Object.entries(playersMap);
-  
-  entries.forEach(([name, p]) => {
-    if (name === meName || !p.alive || !p.connected) {
-      removeProximityWindow(name);
-      return;
-    }
+  proximitySystem.update();
+}
 
-    const dist = Math.hypot(p.position.x - myPos.x, p.position.y - myPos.y);
-    let threshold = 0.12;
-    
-    // Alguacil: mayor rango
-    if (revealedRoleForMe === 'sheriff') threshold = 0.25;
-    // Espía: mayor rango con ya espiados
-    if (revealedRoleForMe === 'spy' && investigatedPlayers.includes(name)) threshold = 0.25;
+function buildActionButtonsSignature(myRole, targetName) {
+  if (abilityBlocked) return `blocked:${myRole}:${targetName}`;
 
-    if (dist < threshold) {
-      showProximityWindow(name, p);
-    } else {
-      removeProximityWindow(name);
-    }
-  });
+  const buttons = [];
+  if (myRole === 'killer') buttons.push('attack');
+  if (myRole === 'medic') buttons.push('heal');
+  if (myRole === 'detective') buttons.push('investigate');
+  if (myRole === 'bodyguard') {
+    const isProtecting = guardState.protecting === targetName;
+    buttons.push(`protect:${isProtecting ? 'off' : 'on'}`);
+  }
+  if (myRole === 'psychic') {
+    buttons.push('freeze');
+    if (!cooldowns.psychic_exterminate_used) buttons.push('exterminate');
+  }
+  if (myRole === 'sheriff') {
+    if (!cooldowns.sheriff_reveal_used) buttons.push('reveal');
+    buttons.push('shoot');
+  }
+  if (myRole === 'jorguin') {
+    buttons.push('block', 'jorguin_attack');
+  }
+  if (myRole === 'spy') {
+    buttons.push('spy_investigate', 'spy_attack');
+  }
+
+  const cooldownSnapshot = buttons.map((type) => {
+    const key = getCooldownKeyForType(type.split(':')[0]);
+    if (!key || !isOnCooldown(key)) return `${type}:ready`;
+    return `${type}:${Math.ceil((cooldowns[key] - Date.now()) / 1000)}`;
+  }).join('|');
+
+  return `${myRole}:${targetName}:${cooldownSnapshot}`;
+}
+
+function updateMedicHealthInProximity(win, playerData, myRole) {
+  const healthWrap = win.element.querySelector('.prox-health');
+  const healthFill = win.element.querySelector('.prox-health-fill');
+  const healthText = win.element.querySelector('.prox-health-text');
+  if (!healthWrap || !healthFill || !healthText) return;
+
+  if (myRole !== 'medic') {
+    healthWrap.classList.remove('visible');
+    return;
+  }
+
+  const hp = Math.max(0, Math.min(100, Number(playerData?.health ?? 100)));
+  healthWrap.classList.add('visible');
+  healthFill.style.width = `${hp}%`;
+  healthText.textContent = `${Math.round(hp)}%`;
 }
 
 function showProximityWindow(name, p) {
   let win = proximityWindows[name];
   if (!win) {
-    const el = document.createElement('div');
-    el.className = 'flee-proximity-window';
-    el.innerHTML = `
-      <img src="${p.avatarUrl || ''}" class="prox-avatar">
-      <div class="prox-info">
-        <div class="prox-name">${escapeHTML(name)}</div>
-        <div class="prox-actions"></div>
-      </div>
-    `;
-    $('#flee-notifications-container').prepend(el);
-    win = { element: el };
-    proximityWindows[name] = win;
+    return;
   }
-  
-  const actions = win.element.querySelector('.prox-actions');
-  actions.innerHTML = '';
-  
-  if (abilityBlocked) return;
 
-  const role = revealedRoleForMe;
-  if (role === 'killer') {
-    createProxBtn(actions, '🗡️ Atacar', () => wsSend({ t: 'attack', target: name }));
-  } else if (role === 'medic') {
-    createProxBtn(actions, '💊 Curar', () => wsSend({ t: 'heal', target: name }));
-  } else if (role === 'detective') {
-    createProxBtn(actions, '🔍 Investigar', () => wsSend({ t: 'investigate', target: name }));
-  } else if (role === 'sheriff') {
-    createProxBtn(actions, '🎯 Disparar', () => wsSend({ t: 'sheriffShoot', target: name }));
-  } else if (role === 'jorguin') {
-    createProxBtn(actions, '🪄 Hechizar', () => wsSend({ t: 'jorguinBlock', target: name }));
-    createProxBtn(actions, '⚔️ Atacar', () => wsSend({ t: 'jorguinAttack', target: name }));
-  } else if (role === 'spy') {
-    createProxBtn(actions, '👁️ Espiar', () => wsSend({ t: 'spyInvestigate', target: name }));
-    createProxBtn(actions, '🔪 Atacar', () => wsSend({ t: 'spyAttack', target: name }));
-  } else if (role === 'psychic') {
-    createProxBtn(actions, '🧊 Congelar', () => wsSend({ t: 'freezePlayer', target: name }));
-    createProxBtn(actions, '💀 Exterminar', () => wsSend({ t: 'exterminatePlayer', target: name }));
-  } else if (role === 'bodyguard') {
-    const btn = createProxBtn(actions, '🛡️ Proteger', () => {
-       if (guardState.protecting === name) {
-         guardState.protecting = null;
-         wsSend({ t: 'protect', target: null });
-       } else {
-         guardState.protecting = name;
-         wsSend({ t: 'protect', target: name });
-       }
-    });
-    if (guardState.protecting === name) btn.classList.add('active');
-  }
+  const actions = win.element.querySelector('.prox-actions');
+  if (!actions) return;
+
+  const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+  updateMedicHealthInProximity(win, p, myRole);
+
+  const signature = buildActionButtonsSignature(myRole, name);
+  if (win.actionsSignature === signature) return;
+
+  actions.innerHTML = '';
+  win.actionsSignature = signature;
+
+  if (abilityBlocked || frozen || isPsychicFreezeActive()) return;
+
+  const buttons = getActionButtonsForRole(myRole, name);
+  buttons.forEach(btn => actions.appendChild(btn));
 }
 
 function createProxBtn(container, text, onclick) {
@@ -123,9 +277,18 @@ function createProxBtn(container, text, onclick) {
 }
 
 function removeProximityWindow(name) {
-  if (proximityWindows[name]) {
-    proximityWindows[name].element.remove();
-    delete proximityWindows[name];
+  const win = proximityWindows[name];
+  if (win) {
+    if (win.removeTimer) return;
+
+    win.element.classList.add('is-leaving');
+    win.removeTimer = setTimeout(() => {
+      if (win.element && win.element.parentNode) {
+        win.element.remove();
+      }
+      delete proximityWindows[name];
+    }, 180);
+
     if (guardState.protecting === name) {
       guardState.protecting = null;
       wsSend({ t: 'protect', target: null });
@@ -151,7 +314,7 @@ const cooldowns = {
   jorguin_attack: 0,
   spy_investigate: 0,
   spy_attack: 0,
-  carpenter_builds: 0,
+  carpenter_barricade: 0,
   joker_distract: 0
 };
 
@@ -172,8 +335,7 @@ let jokerCooldownInterval = null;
 
 let _jokerFloatingBtn = null;
 let _carpenterFloatingBtn = null;
-let carpenterBuildsUsed = 0;
-const MAX_CARPENTER_BUILDS = 5;
+const CARPENTER_BARRICADE_COOLDOWN_MS = 240000;
 
 let myCoins = 0;
 let coinsOnMap = [];
@@ -193,7 +355,9 @@ const ITEM_INFO = {
   bomba_humo: { name: 'Bomba de humo', emoji: '💨', type: 'active', requiresTarget: true },
   manoplas: { name: 'Manoplas', emoji: '🥊', type: 'passive' },
   daga: { name: 'Daga', emoji: '🗡️', type: 'passive' },
-  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false }
+  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false },
+  globos_joker: { name: 'Globos', emoji: '🎈', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'joker' },
+  barricada_carpintero: { name: 'Barricada', emoji: '🧱', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'carpenter' }
 };
 
 function getInventoryItemCount(itemId) {
@@ -204,45 +368,107 @@ function hasItem(itemId) {
   return getInventoryItemCount(itemId) > 0;
 }
 
+function isJorguinCurseActive() {
+  return controlLockState.jorguinCurseUntil > Date.now();
+}
+
+function isPsychicFreezeActive() {
+  return controlLockState.psychicFrozenUntil > Date.now();
+}
+
+function forceSprintExhaustedLock() {
+  sprint.value = 0;
+  sprint.exhausted = true;
+  sprint.draining = false;
+
+  if (!sprintExhaustedTriggered) {
+    sprintExhaustedTriggered = true;
+    triggerSprintExhaustedActions();
+  }
+
+  window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: true }, '*');
+}
+
+function syncControlLockState() {
+  const curseActive = isJorguinCurseActive();
+  const freezeActive = isPsychicFreezeActive();
+
+  if (freezeActive) {
+    sprint.draining = false;
+    window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: true }, '*');
+  }
+
+  if (curseActive) {
+    if (!controlLockState.sprintForcedByCurse) {
+      controlLockState.sprintForcedByCurse = true;
+      forceSprintExhaustedLock();
+      updateSprintUI();
+    }
+  } else {
+    controlLockState.sprintForcedByCurse = false;
+  }
+
+  if (!freezeActive && !curseActive && !sprint.exhausted) {
+    window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
+  }
+}
+
+function isJokerActiveRole() {
+  return rolesByName[meName] === 'joker' || revealedRoleForMe === 'joker';
+}
+
+function isCarpenterActiveRole() {
+  return rolesByName[meName] === 'carpenter' || revealedRoleForMe === 'carpenter';
+}
+
 function updateInventoryUI() {
   const section = $('#flee-inventory-section');
   const container = $('#flee-inventory-items');
   if (!section || !container) return;
-  
-  if (myInventory.length === 0) {
+
+  const showJokerItem = isJokerActiveRole();
+  const showCarpenterItem = isCarpenterActiveRole();
+  if (myInventory.length === 0 && !showJokerItem && !showCarpenterItem) {
     section.style.display = 'none';
     return;
   }
-  
+
   section.style.display = 'block';
-  
+
   const itemCounts = {};
   myInventory.forEach(id => {
     itemCounts[id] = (itemCounts[id] || 0) + 1;
   });
-  
+
+  if (showJokerItem) {
+    itemCounts.globos_joker = '∞';
+  }
+  if (showCarpenterItem) {
+    itemCounts.barricada_carpintero = '∞';
+  }
+
   container.innerHTML = '';
   Object.entries(itemCounts).forEach(([itemId, count]) => {
     const info = ITEM_INFO[itemId];
     if (!info) return;
-    
+
     const item = document.createElement('div');
     item.className = 'flee-inventory-item' + (info.type === 'passive' ? ' passive' : '');
-    
+
     if (info.type === 'active' && itemEffects.hourglassUntil > Date.now() && itemId === 'reloj_arena') {
       item.classList.add('active-effect');
     }
-    
+
     item.innerHTML = `
       <span class="item-emoji">${info.emoji}</span>
       <span class="item-name">${info.name}</span>
       <span class="item-count">x${count}</span>
     `;
-    
+
     if (info.type === 'active') {
       item.onclick = () => startItemUse(itemId);
     }
-    
+
     container.appendChild(item);
   });
 }
@@ -250,7 +476,21 @@ function updateInventoryUI() {
 function startItemUse(itemId) {
   const info = ITEM_INFO[itemId];
   if (!info || info.type !== 'active') return;
+
+  if (isJorguinCurseActive() || isPsychicFreezeActive()) {
+    showNotification('⛔ Bloqueado: no puedes usar objetos', 2000);
+    return;
+  }
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+  if (itemId === 'barricada_carpintero') {
+    triggerCarpenterBuild();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -323,6 +563,15 @@ function useItem(itemId, target) {
     return;
   }
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+  if (itemId === 'barricada_carpintero') {
+    triggerCarpenterBuild();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -390,6 +639,49 @@ function updateHourglassTimer() {
   setTimeout(updateHourglassTimer, 100);
 }
 
+let exterminateTimerState = { active: false, end: 0, target: '', attacker: '', perspective: '' };
+let exterminateTimerInterval = null;
+
+function clearExterminateTimerState() {
+  exterminateTimerState = { active: false, end: 0, target: '', attacker: '', perspective: '' };
+  if (exterminateTimerInterval) {
+    clearInterval(exterminateTimerInterval);
+    exterminateTimerInterval = null;
+  }
+  const timerEl = $('#flee-exterminate-timer');
+  if (timerEl) timerEl.style.display = 'none';
+}
+
+function updateExterminateTimerUI() {
+  const timerEl = $('#flee-exterminate-timer');
+  if (!timerEl) return;
+
+  if (!exterminateTimerState.active) {
+    timerEl.style.display = 'none';
+    return;
+  }
+
+  const remaining = Math.max(0, Math.ceil((exterminateTimerState.end - Date.now()) / 1000));
+  timerEl.style.display = 'block';
+
+  if (exterminateTimerState.perspective === 'target') {
+    timerEl.textContent = `¡Serás exterminado en ${remaining}s! ☄️`;
+  } else {
+    timerEl.textContent = `El jugador ${exterminateTimerState.target} será exterminado en ${remaining}s ☄️`;
+  }
+
+  if (remaining <= 0) {
+    clearExterminateTimerState();
+  }
+}
+
+function startExterminateTimerState(nextState) {
+  exterminateTimerState = { ...nextState, active: true };
+  updateExterminateTimerUI();
+  if (exterminateTimerInterval) clearInterval(exterminateTimerInterval);
+  exterminateTimerInterval = setInterval(updateExterminateTimerUI, 1000);
+}
+
 let currentLobby = null;
 let lobbyList = [];
 let currentScreen = 'lobby';
@@ -398,35 +690,151 @@ let frozen = false;
 let frozenUntil = 0;
 let abilityBlocked = false;
 let abilityBlockedUntil = 0;
+const controlLockState = { jorguinCurseUntil: 0, psychicFrozenUntil: 0, sprintForcedByCurse: false };
 let detectiveSpeedBuff = false;
 let detectiveSpeedBuffUntil = 0;
 
 let publicReveals = {};
 let investigatedPlayers = [];
+let spyInvestigatedPlayers = [];
 let barricades = [];
 
 let readyState = { isReady: false, readyCount: 0, totalPlayers: 0 };
 
-const custom = {
-  bg: localStorage.getItem('flee_custom_bg') || '#000000',
-  bgOpacity: parseFloat(localStorage.getItem('flee_custom_bgOpacity')) || 0.90,
-  border: localStorage.getItem('flee_custom_border') || '#ffffff',
-  text: localStorage.getItem('flee_custom_text') || '#ffffff'
+const DEFAULT_CUSTOM_THEME = {
+  bg: '#000000',
+  bgOpacity: 0.92,
+  border: '#ffffff',
+  text: '#ffffff'
 };
+
+function sanitizeHexColor(value, fallback) {
+  const fallbackNormalized = (fallback || '#ffffff').toLowerCase();
+  if (typeof value !== 'string') return fallbackNormalized;
+
+  const trimmed = value.trim();
+  const match = /^#?([\da-f]{3}|[\da-f]{6})$/i.exec(trimmed);
+  if (!match) return fallbackNormalized;
+
+  const normalized = match[1].length === 3
+    ? match[1].split('').map((ch) => ch + ch).join('')
+    : match[1];
+
+  return `#${normalized.toLowerCase()}`;
+}
+
+function clampOpacity(value, fallback = DEFAULT_CUSTOM_THEME.bgOpacity) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+const custom = {
+  bg: sanitizeHexColor(localStorage.getItem('flee_custom_bg'), DEFAULT_CUSTOM_THEME.bg),
+  bgOpacity: clampOpacity(localStorage.getItem('flee_custom_bgOpacity')),
+  border: sanitizeHexColor(localStorage.getItem('flee_custom_border'), DEFAULT_CUSTOM_THEME.border),
+  text: sanitizeHexColor(localStorage.getItem('flee_custom_text'), DEFAULT_CUSTOM_THEME.text)
+};
+
+const THEME_STORAGE_KEY = 'flee_theme_modules_v1';
+const THEME_MODULE_ORDER = ['userPanel', 'proximity', 'startup', 'radar', 'notifications'];
+const THEME_DEFAULTS = {
+  bg: '#000000',
+  border: '#ffffff',
+  text: '#ffffff',
+  internal: '#ffffff',
+  gradient: '#808080'
+};
+
+function normalizeThemeModule(data = {}) {
+  return {
+    bg: sanitizeHexColor(data.bg, THEME_DEFAULTS.bg),
+    border: sanitizeHexColor(data.border, THEME_DEFAULTS.border),
+    text: sanitizeHexColor(data.text, THEME_DEFAULTS.text),
+    internal: sanitizeHexColor(data.internal, THEME_DEFAULTS.internal),
+    gradient: sanitizeHexColor(data.gradient, THEME_DEFAULTS.gradient)
+  };
+}
+
+const ThemeManager = {
+  modules: {},
+  load() {
+    let parsed = {};
+    try {
+      parsed = JSON.parse(localStorage.getItem(THEME_STORAGE_KEY) || '{}') || {};
+    } catch (e) {
+      parsed = {};
+    }
+    THEME_MODULE_ORDER.forEach((moduleKey) => {
+      this.modules[moduleKey] = normalizeThemeModule(parsed[moduleKey]);
+    });
+  },
+  save() {
+    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(this.modules));
+  },
+  get(moduleKey) {
+    return normalizeThemeModule(this.modules[moduleKey]);
+  },
+  set(moduleKey, patch) {
+    this.modules[moduleKey] = normalizeThemeModule({ ...this.get(moduleKey), ...patch });
+    this.applyModule(moduleKey);
+  },
+  reset(moduleKey) {
+    this.modules[moduleKey] = normalizeThemeModule(THEME_DEFAULTS);
+    this.applyModule(moduleKey);
+  },
+  copyFromPrevious(moduleKey) {
+    const idx = THEME_MODULE_ORDER.indexOf(moduleKey);
+    if (idx <= 0) return;
+    const prevKey = THEME_MODULE_ORDER[idx - 1];
+    this.modules[moduleKey] = normalizeThemeModule(this.get(prevKey));
+    this.applyModule(moduleKey);
+  },
+  applyModule(moduleKey) {
+    const t = this.get(moduleKey);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-bg`, t.bg);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-border`, t.border);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-text`, t.text);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-internal`, t.internal);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-gradient`, t.gradient);
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-bg-rgb`, hexToRgb(t.bg));
+    document.documentElement.style.setProperty(`--flee-theme-${moduleKey}-border-rgb`, hexToRgb(t.border));
+    if (moduleKey === 'radar') {
+      window.postMessage({ source: 'radar-admin', type: 'themeUpdate', theme: t }, '*');
+    }
+  },
+  applyAll() {
+    THEME_MODULE_ORDER.forEach((k) => this.applyModule(k));
+  }
+};
+ThemeManager.load();
+
 
 function setCssVarsForCustom(bg, op, border, text){
   const rgba = hexToRgba(bg, op);
   document.documentElement.style.setProperty('--flee-bg-rgba', rgba);
+  document.documentElement.style.setProperty('--flee-bg-solid', bg);
   document.documentElement.style.setProperty('--flee-border', border);
   document.documentElement.style.setProperty('--flee-text', text);
+  document.documentElement.style.setProperty('--flee-border-rgb', hexToRgb(border));
+  document.documentElement.style.setProperty('--flee-text-rgb', hexToRgb(text));
+  document.documentElement.style.setProperty('--flee-bg-rgb', hexToRgb(bg));
 }
 
 function hexToRgba(hex, opacity){
-  hex = hex.replace('#','');
+  hex = sanitizeHexColor(hex, DEFAULT_CUSTOM_THEME.bg).replace('#','');
   const r = parseInt(hex.substring(0,2),16);
   const g = parseInt(hex.substring(2,4),16);
   const b = parseInt(hex.substring(4,6),16);
-  return `rgba(${r},${g},${b},${opacity})`;
+  return `rgba(${r},${g},${b},${clampOpacity(opacity)})`;
+}
+
+function hexToRgb(hex){
+  const clean = sanitizeHexColor(hex, DEFAULT_CUSTOM_THEME.text).replace('#','');
+  const r = parseInt(clean.substring(0,2),16);
+  const g = parseInt(clean.substring(2,4),16);
+  const b = parseInt(clean.substring(4,6),16);
+  return `${r},${g},${b}`;
 }
 
 function createStyles(){
@@ -434,40 +842,71 @@ function createStyles(){
   const css = `
     :root { 
       --flee-bg-rgba: ${hexToRgba(custom.bg, custom.bgOpacity)};
+      --flee-bg-solid: ${custom.bg};
       --flee-border: ${custom.border}; 
       --flee-text: ${custom.text}; 
+      --flee-border-rgb: ${hexToRgb(custom.border)};
+      --flee-text-rgb: ${hexToRgb(custom.text)};
+      --flee-bg-rgb: ${hexToRgb(custom.bg)};
+      --flee-theme-userPanel-bg: ${ThemeManager.get('userPanel').bg};
+      --flee-theme-userPanel-border: ${ThemeManager.get('userPanel').border};
+      --flee-theme-userPanel-text: ${ThemeManager.get('userPanel').text};
+      --flee-theme-userPanel-internal: ${ThemeManager.get('userPanel').internal};
+      --flee-theme-userPanel-gradient: ${ThemeManager.get('userPanel').gradient};
+      --flee-theme-proximity-bg: ${ThemeManager.get('proximity').bg};
+      --flee-theme-proximity-border: ${ThemeManager.get('proximity').border};
+      --flee-theme-proximity-text: ${ThemeManager.get('proximity').text};
+      --flee-theme-proximity-internal: ${ThemeManager.get('proximity').internal};
+      --flee-theme-proximity-gradient: ${ThemeManager.get('proximity').gradient};
+      --flee-theme-startup-bg: ${ThemeManager.get('startup').bg};
+      --flee-theme-startup-border: ${ThemeManager.get('startup').border};
+      --flee-theme-startup-text: ${ThemeManager.get('startup').text};
+      --flee-theme-startup-internal: ${ThemeManager.get('startup').internal};
+      --flee-theme-startup-gradient: ${ThemeManager.get('startup').gradient};
+      --flee-theme-radar-bg: ${ThemeManager.get('radar').bg};
+      --flee-theme-radar-border: ${ThemeManager.get('radar').border};
+      --flee-theme-radar-text: ${ThemeManager.get('radar').text};
+      --flee-theme-radar-internal: ${ThemeManager.get('radar').internal};
+      --flee-theme-radar-gradient: ${ThemeManager.get('radar').gradient};
+      --flee-theme-notifications-bg: ${ThemeManager.get('notifications').bg};
+      --flee-theme-notifications-border: ${ThemeManager.get('notifications').border};
+      --flee-theme-notifications-text: ${ThemeManager.get('notifications').text};
+      --flee-theme-notifications-internal: ${ThemeManager.get('notifications').internal};
+      --flee-theme-notifications-gradient: ${ThemeManager.get('notifications').gradient};
     }
     
-    #flee-lobby-screen{position:fixed;inset:0;z-index:100000;background:linear-gradient(135deg,#0a1628,#1a2642);display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui}
+    #flee-lobby-screen{position:fixed;inset:0;z-index:100000;background:linear-gradient(135deg,var(--flee-theme-startup-bg),var(--flee-theme-startup-gradient));display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui}
     
-    #flee-notifications-container {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 100030;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      pointer-events: none;
-    }
+    #flee-notifications-container {position: fixed;top: 20px;right: 20px;z-index: 100030;display:flex;flex-direction:column;gap:12px;pointer-events:none;max-width:320px}
+    #flee-proximity-stack{display:flex;flex-direction:column;gap:10px;order:1}
+    #flee-toast-stack{display:flex;flex-direction:column;gap:10px;order:2}
 
     .flee-proximity-window {
-      background: rgba(0,0,0,0.85);
-      border: 2px solid var(--flee-border);
-      border-radius: 12px;
-      padding: 10px;
+      background: linear-gradient(145deg, var(--flee-theme-proximity-bg), var(--flee-theme-proximity-gradient));
+      border: 2px solid var(--flee-theme-proximity-border);
+      border-radius: 10px;
+      padding: 8px 9px;
       display: flex;
-      gap: 12px;
-      min-width: 200px;
+      align-items: center;
+      gap: 9px;
+      min-width: 188px;
       pointer-events: auto;
-      animation: slideIn 0.3s ease;
-      color: var(--flee-text);
+      color: var(--flee-theme-proximity-text);
+      box-shadow: 0 10px 24px rgba(0,0,0,0.44), inset 0 1px 0 rgba(255,255,255,0.06);
+      transform-origin: top right;
+      animation: slideIn 0.2s ease;
+      transition: opacity 0.18s ease, transform 0.18s ease;
     }
+    .flee-proximity-window.is-leaving { opacity: 0; transform: translateX(10px) scale(0.985); }
 
-    .prox-avatar { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--flee-border); object-fit: cover; }
-    .prox-info { flex: 1; }
-    .prox-name { font-weight: 800; font-size: 14px; margin-bottom: 5px; }
-    .prox-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+    .prox-avatar { width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(var(--flee-border-rgb),0.75); object-fit: cover; flex: 0 0 38px; }
+    .prox-info { flex: 1; min-width: 0; }
+    .prox-name { font-weight: 800; font-size: 13px; margin-bottom: 4px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .prox-health{display:none;position:relative;height:10px;border-radius:999px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);overflow:hidden;margin-bottom:4px}
+    .prox-health.visible{display:block}
+    .prox-health-fill{height:100%;width:100%;background:linear-gradient(90deg,#2ecc71,#45c35f);transition:width 0.2s ease}
+    .prox-health-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:800;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.7);pointer-events:none}
+    .prox-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
     .prox-btn { 
       padding: 4px 8px; 
       background: var(--flee-border); 
@@ -480,72 +919,60 @@ function createStyles(){
     }
     .prox-btn.active { background: #2ecc71; color: white; }
 
-    .flee-notification {
-      background: rgba(0,0,0,0.9);
-      color: var(--flee-text);
-      padding: 12px 18px;
-      border-radius: 10px;
-      border-left: 5px solid var(--flee-border);
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      pointer-events: auto;
-      animation: slideIn 0.3s ease;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-    }
-    .notif-avatar { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--flee-border); }
+    .flee-notification{background:linear-gradient(145deg,var(--flee-theme-notifications-bg),var(--flee-theme-notifications-gradient));color:var(--flee-theme-notifications-text);padding:10px 12px;border-radius:12px;border:2px solid var(--flee-theme-notifications-border);font-weight:700;display:flex;align-items:center;gap:10px;pointer-events:auto;box-shadow:0 10px 24px rgba(0,0,0,0.45);backdrop-filter:blur(6px);opacity:1;transform:translateX(0);transition:opacity 0.22s ease,transform 0.22s ease;animation:toastIn 0.24s ease}
+    .notif-avatar{width:34px;height:34px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;flex:0 0 34px}
+    .notif-text{line-height:1.25;font-size:13px;word-break:break-word}
 
-    #flee-lobby-container{width:90%;max-width:1200px;background:rgba(10,22,40,0.95);border:2px solid var(--flee-border);border-radius:20px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,0.7)}
+    #flee-lobby-container{width:90%;max-width:1200px;background:var(--flee-theme-startup-bg);border:2px solid var(--flee-theme-startup-border);border-radius:20px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,0.7)}
     #flee-lobby-header{text-align:center;margin-bottom:30px}
-    #flee-lobby-header h1{font-size:48px;font-weight:900;color:var(--flee-border);margin:0;text-shadow:0 4px 20px rgba(74,158,255,0.5)}
+    #flee-lobby-header h1{font-size:48px;font-weight:900;color:var(--flee-border);margin:0;text-shadow:0 4px 20px rgba(var(--flee-border-rgb),0.55)}
     #flee-lobby-nav{display:flex;gap:15px;justify-content:center;margin-bottom:30px}
-    .flee-nav-btn{padding:12px 24px;background:rgba(74,158,255,0.1);color:var(--flee-text);border:2px solid var(--flee-border);border-radius:12px;cursor:pointer;font-weight:700;transition:all 0.3s}
-    .flee-nav-btn:hover{background:rgba(74,158,255,0.3);transform:translateY(-2px)}
-    .flee-nav-btn.active{background:var(--flee-border);color:#0a1628}
+    .flee-nav-btn{padding:12px 24px;background:rgba(var(--flee-border-rgb),0.10);color:var(--flee-text);border:2px solid var(--flee-border);border-radius:12px;cursor:pointer;font-weight:700;transition:all 0.3s}
+    .flee-nav-btn:hover{background:rgba(var(--flee-border-rgb),0.30);transform:translateY(-2px)}
+    .flee-nav-btn.active{background:var(--flee-border);color:var(--flee-bg-solid)}
     #flee-lobby-content{min-height:400px}
     .flee-lobby-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px}
-    .flee-lobby-card{background:rgba(255,255,255,0.05);border:2px solid rgba(74,158,255,0.3);border-radius:12px;padding:20px;cursor:pointer;transition:all 0.3s}
-    .flee-lobby-card:hover{border-color:var(--flee-border);transform:scale(1.02);box-shadow:0 8px 25px rgba(74,158,255,0.4)}
-    .flee-btn{padding:10px 20px;background:var(--flee-border);color:#0a1628;border:none;border-radius:10px;font-weight:700;cursor:pointer;transition:all 0.3s}
-    .flee-btn:hover{background:#6ab4ff;transform:scale(1.05)}
-    .flee-input{padding:12px;background:rgba(255,255,255,0.1);border:2px solid rgba(74,158,255,0.3);border-radius:10px;color:var(--flee-text);font-size:14px;width:100%}
+    .flee-lobby-card{background:rgba(255,255,255,0.05);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:12px;padding:20px;cursor:pointer;transition:all 0.3s}
+    .flee-lobby-card:hover{border-color:var(--flee-border);transform:scale(1.02);box-shadow:0 8px 25px rgba(var(--flee-border-rgb),0.40)}
+    .flee-btn{padding:10px 20px;background:var(--flee-border);color:var(--flee-bg-solid);border:none;border-radius:10px;font-weight:700;cursor:pointer;transition:all 0.3s}
+    .flee-btn:hover{background:rgba(var(--flee-border-rgb),0.75);transform:scale(1.05)}
+    .flee-input{padding:12px;background:rgba(var(--flee-text-rgb),0.10);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:10px;color:var(--flee-text);font-size:14px;width:100%}
     .flee-input:focus{outline:none;border-color:var(--flee-border)}
     
     #flee-profile-editor{display:none}
     #flee-profile-editor.active{display:block}
     #flee-profile-editor-container{max-width:450px;margin:0 auto;padding:25px;background:rgba(10,22,40,0.6);border-radius:16px;max-height:70vh;overflow-y:auto}
     #flee-profile-editor-container::-webkit-scrollbar{width:8px}
-    #flee-profile-editor-container::-webkit-scrollbar-track{background:#1a2942;border-radius:4px}
-    #flee-profile-editor-container::-webkit-scrollbar-thumb{background:#4a9eff;border-radius:4px}
-    #flee-profile-editor-container::-webkit-scrollbar-thumb:hover{background:#6ab0ff}
-    .flee-avatar-selection{display:flex;flex-direction:column;align-items:center;gap:20px;margin:20px 0;padding:20px;background:rgba(255,255,255,0.03);border-radius:12px;border:1px solid rgba(74,158,255,0.2)}
+    #flee-profile-editor-container::-webkit-scrollbar-track{background:rgba(var(--flee-bg-rgb),0.75);border-radius:4px}
+    #flee-profile-editor-container::-webkit-scrollbar-thumb{background:var(--flee-border);border-radius:4px}
+    #flee-profile-editor-container::-webkit-scrollbar-thumb:hover{background:rgba(var(--flee-border-rgb),0.75)}
+    .flee-avatar-selection{display:flex;flex-direction:column;align-items:center;gap:20px;margin:20px 0;padding:20px;background:rgba(255,255,255,0.03);border-radius:12px;border:1px solid rgba(var(--flee-border-rgb),0.20)}
     .flee-avatar-preview-container{position:relative}
-    .flee-avatar-preview-img{width:120px;height:120px;border-radius:50%;border:4px solid var(--flee-border);object-fit:cover;background:#1a2942;transition:all 0.3s}
-    .flee-avatar-preview-img:hover{transform:scale(1.05);box-shadow:0 0 20px rgba(74,158,255,0.4)}
+    .flee-avatar-preview-img{width:120px;height:120px;border-radius:50%;border:4px solid var(--flee-border);object-fit:cover;background:rgba(var(--flee-bg-rgb),0.75);transition:all 0.3s}
+    .flee-avatar-preview-img:hover{transform:scale(1.05);box-shadow:0 0 20px rgba(var(--flee-border-rgb),0.40)}
     .flee-avatar-options{width:100%;display:flex;flex-direction:column;gap:15px}
     .flee-avatar-option-group{display:flex;flex-direction:column;gap:8px}
     .flee-avatar-option-group label{color:var(--flee-text);font-size:13px;font-weight:600;opacity:0.9}
     .flee-avatar-divider{display:flex;align-items:center;gap:12px;margin:5px 0}
-    .flee-avatar-divider::before,.flee-avatar-divider::after{content:'';flex:1;height:1px;background:rgba(74,158,255,0.3)}
+    .flee-avatar-divider::before,.flee-avatar-divider::after{content:'';flex:1;height:1px;background:rgba(var(--flee-border-rgb),0.30)}
     .flee-avatar-divider span{color:var(--flee-text);opacity:0.6;font-size:12px;text-transform:uppercase}
-    .flee-file-upload-btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;background:rgba(74,158,255,0.15);border:2px dashed rgba(74,158,255,0.5);border-radius:10px;color:var(--flee-text);cursor:pointer;transition:all 0.3s;font-weight:600}
-    .flee-file-upload-btn:hover{background:rgba(74,158,255,0.25);border-color:var(--flee-border)}
+    .flee-file-upload-btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;background:rgba(var(--flee-border-rgb),0.15);border:2px dashed rgba(var(--flee-border-rgb),0.5);border-radius:10px;color:var(--flee-text);cursor:pointer;transition:all 0.3s;font-weight:600}
+    .flee-file-upload-btn:hover{background:rgba(var(--flee-border-rgb),0.25);border-color:var(--flee-border)}
     .flee-file-upload-btn input[type="file"]{display:none}
     .flee-avatar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:15px;margin:20px 0}
     .flee-avatar-option{width:80px;height:80px;border-radius:50%;border:3px solid transparent;cursor:pointer;object-fit:cover;transition:all 0.3s}
     .flee-avatar-option:hover{border-color:var(--flee-border);transform:scale(1.1)}
-    .flee-avatar-option.selected{border-color:var(--flee-border);box-shadow:0 0 20px rgba(74,158,255,0.6)}
+    .flee-avatar-option.selected{border-color:var(--flee-border);box-shadow:0 0 20px rgba(var(--flee-border-rgb),0.60)}
     .flee-profile-section{margin-bottom:20px}
     .flee-profile-section-title{color:var(--flee-border);font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-    .flee-input-enhanced{padding:14px 16px;background:rgba(255,255,255,0.08);border:2px solid rgba(74,158,255,0.3);border-radius:12px;color:var(--flee-text);font-size:14px;width:100%;box-sizing:border-box;transition:all 0.3s}
-    .flee-input-enhanced:focus{outline:none;border-color:var(--flee-border);background:rgba(255,255,255,0.12);box-shadow:0 0 15px rgba(74,158,255,0.2)}
+    .flee-input-enhanced{padding:14px 16px;background:rgba(255,255,255,0.08);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:12px;color:var(--flee-text);font-size:14px;width:100%;box-sizing:border-box;transition:all 0.3s}
+    .flee-input-enhanced:focus{outline:none;border-color:var(--flee-border);background:rgba(var(--flee-text-rgb),0.12);box-shadow:0 0 15px rgba(var(--flee-border-rgb),0.2)}
     .flee-input-enhanced::placeholder{color:rgba(233,238,247,0.4)}
-    .flee-save-btn{width:100%;padding:16px 24px;background:linear-gradient(135deg,#4a9eff,#2980b9);color:white;border:none;border-radius:12px;font-weight:800;font-size:16px;cursor:pointer;transition:all 0.3s;box-shadow:0 4px 15px rgba(74,158,255,0.3);text-transform:uppercase;letter-spacing:0.5px}
-    .flee-save-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(74,158,255,0.5);background:linear-gradient(135deg,#5dade2,#3498db)}
+    .flee-save-btn{width:100%;padding:16px 24px;background:linear-gradient(135deg,var(--flee-border),rgba(var(--flee-text-rgb),0.45));color:white;border:none;border-radius:12px;font-weight:800;font-size:16px;cursor:pointer;transition:all 0.3s;box-shadow:0 4px 15px rgba(var(--flee-border-rgb),0.3);text-transform:uppercase;letter-spacing:0.5px}
+    .flee-save-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(var(--flee-border-rgb),0.5);background:linear-gradient(135deg,rgba(var(--flee-border-rgb),0.85),rgba(var(--flee-text-rgb),0.55))}
     
     #flee-ui{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:99999;font-family:Inter,system-ui,Arial}
-    #flee-box{background:var(--flee-bg-rgba);border:2px solid var(--flee-border);border-radius:10px;padding:10px;width:420px;color:var(--flee-text);box-shadow:0 8px 30px rgba(0,0,0,0.6);position:relative;cursor:grab;user-select:none}
+    #flee-box{background:var(--flee-theme-userPanel-bg);border:2px solid var(--flee-theme-userPanel-border);border-radius:10px;padding:10px;width:420px;color:var(--flee-theme-userPanel-text);box-shadow:0 8px 30px rgba(0,0,0,0.6);position:relative;cursor:grab;user-select:none}
     #flee-role{display:block;text-align:center;font-weight:800;margin-bottom:8px;font-size:18px}
     #flee-health{width:90%;height:24px;background:#222;border-radius:8px;margin:0 auto;overflow:hidden;border:1px solid rgba(255,255,255,0.06)}
     #flee-health-inner{height:100%;width:100%;background:linear-gradient(90deg,#2ecc71,#45c35f);transition:width .25s ease;display:flex;align-items:center;justify-content:center;font-weight:700}
@@ -560,10 +987,10 @@ function createStyles(){
     @keyframes detectiveGlowPulse{from{box-shadow:0 0 10px 3px rgba(255, 215, 0, 0.4)}to{box-shadow:0 0 20px 8px rgba(255, 215, 0, 0.8)}}
     #flee-tasks{text-align:center;margin-top:8px;font-size:13px}
     .flee-tasks-info{display:flex;justify-content:space-around;align-items:center;margin-top:8px;font-size:13px}
-    #flee-my-tasks{color:#4a9eff;font-weight:600}
+    #flee-my-tasks{color:var(--flee-border);font-weight:600}
     #flee-global-tasks{color:#2ecc71;font-weight:600}
     #flee-coins-display{text-align:center;margin-top:8px;font-size:14px;color:#ffd700;font-weight:800}
-    .flee-section{margin-top:12px;padding:10px;background:rgba(255,255,255,0.03);border-radius:10px;border:1px solid rgba(74,158,255,0.15)}
+    .flee-section{margin-top:12px;padding:10px;background:rgba(255,255,255,0.03);border-radius:10px;border:1px solid rgba(var(--flee-border-rgb),0.15)}
     .flee-section-title{font-size:12px;font-weight:700;color:var(--flee-border);margin-bottom:8px;text-align:center;text-transform:uppercase;letter-spacing:0.5px}
     #flee-players{display:flex;flex-wrap:wrap;gap:8px;padding:5px;max-height:150px;overflow-y:auto;justify-content:center}
     #flee-players::-webkit-scrollbar{width:4px}
@@ -580,8 +1007,8 @@ function createStyles(){
     .flee-player.disconnected .flee-player-name{font-style:italic}
     
     #flee-center-msg{position:fixed;inset:0;z-index:100010;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center}
-    #flee-center-msg-content{background:linear-gradient(135deg,#1a2642,#0a1628);border:3px solid var(--flee-border);border-radius:20px;padding:40px;max-width:500px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.9)}
-    #center-role{font-size:56px;font-weight:900;color:var(--flee-border);margin:20px 0;text-shadow:0 4px 20px rgba(74,158,255,0.6);transition:all 0.15s}
+    #flee-center-msg-content{background:linear-gradient(135deg,rgba(var(--flee-border-rgb),0.22),var(--flee-bg-solid));border:3px solid var(--flee-border);border-radius:20px;padding:40px;max-width:500px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.9)}
+    #center-role{font-size:56px;font-weight:900;color:var(--flee-border);margin:20px 0;text-shadow:0 4px 20px rgba(var(--flee-border-rgb),0.6);transition:all 0.15s}
     
     .flee-roulette-container{position:relative;height:120px;overflow:hidden;border:2px solid var(--flee-border);border-radius:12px;background:rgba(0,0,0,0.5);margin:20px 0}
     .flee-roulette-track{display:flex;gap:20px;align-items:center;height:100%;transition:transform 0.1s linear}
@@ -595,20 +1022,21 @@ function createStyles(){
     #flee-blocked-timer{font-size:36px;margin-bottom:10px}
     
     #flee-shop-modal{position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:100020;display:none;align-items:center;justify-content:center}
-    #flee-shop-content{background:linear-gradient(135deg,#1a2642,#0a1628);border:3px solid var(--flee-border);border-radius:20px;padding:30px;max-width:600px;width:90%}
-    .flee-shop-item{background:rgba(255,255,255,0.05);border:2px solid rgba(74,158,255,0.3);border-radius:12px;padding:15px;margin:10px 0;display:flex;justify-content:space-between;align-items:center}
-    .flee-shop-item:hover{border-color:var(--flee-border);background:rgba(74,158,255,0.1)}
+    #flee-shop-content{background:linear-gradient(135deg,rgba(var(--flee-border-rgb),0.22),var(--flee-bg-solid));border:3px solid var(--flee-border);border-radius:20px;padding:30px;max-width:600px;width:90%}
+    .flee-shop-item{background:rgba(255,255,255,0.05);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:12px;padding:15px;margin:10px 0;display:flex;justify-content:space-between;align-items:center}
+    .flee-shop-item:hover{border-color:var(--flee-border);background:rgba(var(--flee-border-rgb),0.10)}
     
-    .flee-notification{position:fixed;top:100px;right:20px;background:rgba(0,0,0,0.9);color:white;padding:15px 20px;border-radius:12px;border-left:4px solid var(--flee-border);font-weight:700;z-index:100030;animation:slideIn 0.3s ease}
+    .flee-notification.is-leaving{opacity:0;transform:translateX(12px)}
     @keyframes slideIn{from{transform:translateX(400px);opacity:0}to{transform:translateX(0);opacity:1}}
+    @keyframes toastIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
     
     .flee-effect-buff{animation:buffPulse 0.5s ease}
-    @keyframes buffPulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.5) drop-shadow(0 0 10px #4a9eff)}}
+    @keyframes buffPulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.5) drop-shadow(0 0 10px var(--flee-border))}}
     
-    #flee-waiting-room{position:fixed;inset:0;z-index:100001;background:linear-gradient(135deg,#0a1628,#1a2642);display:none;align-items:center;justify-content:center;font-family:Inter,system-ui}
+    #flee-waiting-room{position:fixed;inset:0;z-index:100001;background:linear-gradient(135deg,var(--flee-bg-solid),rgba(var(--flee-border-rgb),0.20));display:none;align-items:center;justify-content:center;font-family:Inter,system-ui}
     #flee-waiting-container{width:90%;max-width:700px;background:rgba(10,22,40,0.95);border:2px solid var(--flee-border);border-radius:20px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,0.7)}
     #flee-waiting-header{text-align:center;margin-bottom:25px}
-    #flee-waiting-header h2{font-size:32px;font-weight:900;color:var(--flee-border);margin:0;text-shadow:0 4px 20px rgba(74,158,255,0.5)}
+    #flee-waiting-header h2{font-size:32px;font-weight:900;color:var(--flee-border);margin:0;text-shadow:0 4px 20px rgba(var(--flee-border-rgb),0.55)}
     #flee-waiting-header p{color:var(--flee-text);margin:10px 0 0 0;opacity:0.8}
     #flee-waiting-config{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:25px;padding:15px;background:rgba(255,255,255,0.05);border-radius:12px}
     .flee-config-item{text-align:center;color:var(--flee-text)}
@@ -617,7 +1045,7 @@ function createStyles(){
     #flee-waiting-players{margin:20px 0}
     #flee-waiting-players h3{color:var(--flee-text);margin-bottom:15px;text-align:center}
     #flee-waiting-players-list{display:flex;flex-wrap:wrap;gap:15px;justify-content:center}
-    .flee-waiting-player{display:flex;flex-direction:column;align-items:center;padding:10px 15px;background:rgba(255,255,255,0.05);border:2px solid rgba(74,158,255,0.3);border-radius:12px;min-width:100px}
+    .flee-waiting-player{display:flex;flex-direction:column;align-items:center;padding:10px 15px;background:rgba(255,255,255,0.05);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:12px;min-width:100px}
     .flee-waiting-player.creator{border-color:#ffd700;background:rgba(255,215,0,0.1)}
     .flee-waiting-player img{width:50px;height:50px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;margin-bottom:8px}
     .flee-waiting-player.creator img{border-color:#ffd700}
@@ -654,13 +1082,13 @@ function createStyles(){
     
     .flee-player{cursor:pointer;transition:transform 0.2s,box-shadow 0.2s}
     .flee-player:hover{transform:scale(1.1);z-index:10}
-    .flee-player:hover img{box-shadow:0 4px 12px rgba(74,158,255,0.5)}
+    .flee-player:hover img{box-shadow:0 4px 12px rgba(var(--flee-border-rgb),0.5)}
     .flee-player.protected img{border-color:#3399ff!important;box-shadow:0 0 12px rgba(51,153,255,0.6)}
     .flee-player .protection-indicator{position:absolute;top:-4px;right:-4px;font-size:12px;z-index:5}
     
     #flee-profile-modal{position:fixed;inset:0;z-index:100050;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;font-family:Inter,system-ui}
     #flee-profile-modal.active{display:flex}
-    #flee-profile-content{background:linear-gradient(135deg,#1a2642,#0a1628);border:3px solid var(--flee-border);border-radius:20px;padding:30px;max-width:400px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.9);position:relative}
+    #flee-profile-content{background:linear-gradient(135deg,rgba(var(--flee-border-rgb),0.22),var(--flee-bg-solid));border:3px solid var(--flee-border);border-radius:20px;padding:30px;max-width:400px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.9);position:relative}
     #flee-profile-close{position:absolute;top:10px;right:15px;font-size:24px;cursor:pointer;color:var(--flee-text);opacity:0.7;transition:opacity 0.2s}
     #flee-profile-close:hover{opacity:1}
     #flee-profile-avatar{width:120px;height:120px;border-radius:50%;border:4px solid var(--flee-border);object-fit:cover;margin-bottom:15px}
@@ -670,9 +1098,10 @@ function createStyles(){
     #flee-profile-status{font-size:14px;margin-bottom:20px}
     #flee-profile-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:15px}
     
-    .flee-action-btn{padding:12px 20px;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer;border:2px solid transparent;transition:all 0.3s;display:flex;align-items:center;gap:6px}
-    .flee-action-btn:hover:not(:disabled){transform:scale(1.05);box-shadow:0 4px 15px rgba(0,0,0,0.4)}
-    .flee-action-btn:disabled{opacity:0.5;cursor:not-allowed}
+    .flee-action-btn{padding:8px 12px;border-radius:9px;font-weight:700;font-size:12px;line-height:1;cursor:pointer;border:1px solid rgba(var(--flee-border-rgb),0.45);background:linear-gradient(135deg,var(--flee-theme-proximity-internal),var(--flee-theme-proximity-gradient));color:var(--flee-theme-proximity-text);transition:transform 0.16s ease,box-shadow 0.16s ease,filter 0.16s ease,opacity 0.16s ease;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:28px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+    .flee-action-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 14px rgba(0,0,0,0.35);filter:saturate(1.1)}
+    .flee-action-btn.is-pressed:not(:disabled){transform:translateY(0);box-shadow:0 2px 6px rgba(0,0,0,0.35);filter:brightness(0.96)}
+    .flee-action-btn:disabled{opacity:0.58;cursor:not-allowed;filter:saturate(0.7);box-shadow:none;transform:none;border-color:rgba(var(--flee-border-rgb),0.45)}
     .flee-action-btn.attack{background:linear-gradient(135deg,#ff4444,#cc3333);color:white;border-color:#ff6666}
     .flee-action-btn.heal{background:linear-gradient(135deg,#44ff88,#27ae60);color:white;border-color:#56d364}
     .flee-action-btn.investigate{background:linear-gradient(135deg,#ffcc00,#f39c12);color:#333;border-color:#ffd700}
@@ -683,6 +1112,11 @@ function createStyles(){
     .flee-action-btn.shoot{background:linear-gradient(135deg,#8b4513,#654321);color:white;border-color:#a0522d}
     .flee-action-btn.build{background:linear-gradient(135deg,#a0522d,#8b4513);color:white;border-color:#cd853f}
     .flee-action-btn.joker{background:linear-gradient(135deg,#aa66ff,#8a2be2);color:white;border-color:#bb77ff}
+    .flee-action-btn.block{background:linear-gradient(135deg,#6b2f90,#4b1f69);color:white;border-color:#8d52b0}
+    .flee-action-btn.jorguin_attack{background:linear-gradient(135deg,#552233,#381522);color:white;border-color:#7f3a54}
+    .flee-action-btn.spy_investigate{background:linear-gradient(135deg,#5b6d7d,#3f4d59);color:white;border-color:#7f94a8}
+    .flee-action-btn.spy_attack{background:linear-gradient(135deg,#2c3e50,#1f2b38);color:white;border-color:#4e6a85}
+    .flee-proximity-window .flee-action-btn{min-height:24px;padding:6px 9px;font-size:11px;border-radius:8px}
     
     #flee-joker-floating{position:fixed;left:12px;bottom:78px;z-index:100700;padding:10px 14px;border-radius:10px;background:linear-gradient(135deg,#9b59b6,#8e44ad);color:#fff;border:2px solid rgba(0,0,0,0.2);cursor:pointer;font-weight:900;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,0.45);transition:all 0.3s}
     #flee-joker-floating:hover:not(:disabled){transform:scale(1.05);box-shadow:0 10px 30px rgba(155,89,182,0.5)}
@@ -708,7 +1142,7 @@ function createStyles(){
     #flee-ready-content{background:rgba(10,22,40,0.95);border:2px solid var(--flee-border);border-radius:12px;padding:15px 20px;width:280px;text-align:center;box-shadow:0 8px 25px rgba(0,0,0,0.6);animation:readySlideIn 0.3s ease}
     @keyframes readySlideIn{from{opacity:0;transform:translateX(50px)}to{opacity:1;transform:translateX(0)}}
     #flee-ready-icon{font-size:32px;margin-bottom:8px}
-    #flee-ready-title{font-size:16px;font-weight:800;color:var(--flee-border);margin-bottom:8px;text-shadow:0 2px 10px rgba(74,158,255,0.4)}
+    #flee-ready-title{font-size:16px;font-weight:800;color:var(--flee-border);margin-bottom:8px;text-shadow:0 2px 10px rgba(var(--flee-border-rgb),0.4)}
     #flee-ready-message{font-size:12px;color:var(--flee-text);margin-bottom:12px;line-height:1.4;opacity:0.9}
     #flee-ready-counter{font-size:12px;color:var(--flee-text);margin-bottom:10px;opacity:0.8}
     #flee-ready-counter span{font-weight:800;color:#2ecc71}
@@ -720,12 +1154,12 @@ function createStyles(){
     #flee-ready-waiting.visible{display:block;animation:pulse 1.5s infinite}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
     
-    .flee-role-config{margin-top:20px;padding:15px;background:rgba(255,255,255,0.05);border-radius:12px;border:1px solid rgba(74,158,255,0.2)}
-    .flee-role-config-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;padding-bottom:10px;border-bottom:1px solid rgba(74,158,255,0.2)}
+    .flee-role-config{margin-top:20px;padding:15px;background:rgba(255,255,255,0.05);border-radius:12px;border:1px solid rgba(var(--flee-border-rgb),0.20)}
+    .flee-role-config-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;padding-bottom:10px;border-bottom:1px solid rgba(var(--flee-border-rgb),0.2)}
     
     #flee-inventory-items{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:5px}
-    .flee-inventory-item{display:flex;flex-direction:column;align-items:center;padding:8px 10px;background:rgba(74,158,255,0.1);border:2px solid rgba(74,158,255,0.3);border-radius:10px;cursor:pointer;transition:all 0.2s;min-width:70px}
-    .flee-inventory-item:hover{border-color:var(--flee-border);background:rgba(74,158,255,0.2);transform:scale(1.05)}
+    .flee-inventory-item{display:flex;flex-direction:column;align-items:center;padding:8px 10px;background:rgba(var(--flee-border-rgb),0.10);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:10px;cursor:pointer;transition:all 0.2s;min-width:70px}
+    .flee-inventory-item:hover{border-color:var(--flee-border);background:rgba(var(--flee-border-rgb),0.20);transform:scale(1.05)}
     .flee-inventory-item.passive{border-color:rgba(170,102,255,0.5);background:rgba(170,102,255,0.1)}
     .flee-inventory-item .item-emoji{font-size:20px}
     .flee-inventory-item .item-name{font-size:9px;color:var(--flee-text);margin-top:3px;text-align:center}
@@ -737,30 +1171,30 @@ function createStyles(){
     #flee-smokebomb-msg{background:rgba(80,80,80,0.9);color:white;padding:20px 30px;border-radius:15px;font-weight:800;font-size:20px;text-shadow:0 2px 4px rgba(0,0,0,0.5)}
     
     #flee-target-select-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100025;display:none;align-items:center;justify-content:center}
-    #flee-target-select-content{background:linear-gradient(135deg,#1a2642,#0a1628);border:3px solid var(--flee-border);border-radius:20px;padding:25px;max-width:400px;width:90%;text-align:center}
+    #flee-target-select-content{background:linear-gradient(135deg,rgba(var(--flee-border-rgb),0.22),var(--flee-bg-solid));border:3px solid var(--flee-border);border-radius:20px;padding:25px;max-width:400px;width:90%;text-align:center}
     #flee-target-select-title{font-size:20px;font-weight:800;color:var(--flee-border);margin-bottom:20px}
     #flee-target-select-list{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;max-height:300px;overflow-y:auto;padding:10px}
-    .flee-target-option{display:flex;flex-direction:column;align-items:center;padding:10px 15px;background:rgba(255,255,255,0.05);border:2px solid rgba(74,158,255,0.3);border-radius:12px;cursor:pointer;transition:all 0.2s;min-width:80px}
-    .flee-target-option:hover{border-color:var(--flee-border);background:rgba(74,158,255,0.2);transform:scale(1.05)}
+    .flee-target-option{display:flex;flex-direction:column;align-items:center;padding:10px 15px;background:rgba(255,255,255,0.05);border:2px solid rgba(var(--flee-border-rgb),0.30);border-radius:12px;cursor:pointer;transition:all 0.2s;min-width:80px}
+    .flee-target-option:hover{border-color:var(--flee-border);background:rgba(var(--flee-border-rgb),0.20);transform:scale(1.05)}
     .flee-target-option img{width:50px;height:50px;border-radius:50%;border:2px solid var(--flee-border);object-fit:cover;margin-bottom:5px}
     .flee-target-option span{color:var(--flee-text);font-size:12px;font-weight:600}
     #flee-target-select-cancel{margin-top:20px;padding:12px 25px;background:rgba(231,76,60,0.2);color:#e74c3c;border:2px solid #e74c3c;border-radius:12px;font-weight:700;cursor:pointer;transition:all 0.3s}
     #flee-target-select-cancel:hover{background:#e74c3c;color:white}
     .flee-role-config-header h3{margin:0;color:var(--flee-border);font-size:16px}
-    .flee-role-config-toggle{padding:6px 12px;background:rgba(74,158,255,0.2);border:1px solid var(--flee-border);border-radius:6px;color:var(--flee-text);cursor:pointer;font-size:12px;transition:all 0.2s}
-    .flee-role-config-toggle:hover{background:rgba(74,158,255,0.4)}
+    .flee-role-config-toggle{padding:6px 12px;background:rgba(var(--flee-border-rgb),0.20);border:1px solid var(--flee-border);border-radius:6px;color:var(--flee-text);cursor:pointer;font-size:12px;transition:all 0.2s}
+    .flee-role-config-toggle:hover{background:rgba(var(--flee-border-rgb),0.40)}
     .flee-role-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;max-height:350px;overflow-y:auto;padding-right:5px}
     .flee-role-list::-webkit-scrollbar{width:6px}
-    .flee-role-list::-webkit-scrollbar-track{background:#1a2942;border-radius:3px}
-    .flee-role-list::-webkit-scrollbar-thumb{background:#4a9eff;border-radius:3px}
-    .flee-role-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(74,158,255,0.15);border-radius:8px;transition:all 0.2s}
-    .flee-role-item:hover{background:rgba(255,255,255,0.06);border-color:rgba(74,158,255,0.3)}
+    .flee-role-list::-webkit-scrollbar-track{background:rgba(var(--flee-bg-rgb),0.75);border-radius:3px}
+    .flee-role-list::-webkit-scrollbar-thumb{background:var(--flee-border);border-radius:3px}
+    .flee-role-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(var(--flee-border-rgb),0.15);border-radius:8px;transition:all 0.2s}
+    .flee-role-item:hover{background:rgba(255,255,255,0.06);border-color:rgba(var(--flee-border-rgb),0.3)}
     .flee-role-item.disabled{opacity:0.5}
     .flee-role-item.disabled .flee-role-controls{pointer-events:none}
     .flee-role-name{flex:1;display:flex;align-items:center;gap:8px;color:var(--flee-text);font-weight:600;font-size:13px}
     .flee-role-name input[type="checkbox"]{width:16px;height:16px;cursor:pointer;accent-color:var(--flee-border)}
     .flee-role-controls{display:flex;align-items:center;gap:8px}
-    .flee-role-count{width:50px;padding:5px 8px;background:rgba(255,255,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:6px;color:var(--flee-text);font-size:12px;text-align:center}
+    .flee-role-count{width:50px;padding:5px 8px;background:rgba(var(--flee-text-rgb),0.10);border:1px solid rgba(var(--flee-border-rgb),0.3);border-radius:6px;color:var(--flee-text);font-size:12px;text-align:center}
     .flee-role-count:focus{outline:none;border-color:var(--flee-border)}
     .flee-role-required{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--flee-text);opacity:0.8}
     .flee-role-required input[type="checkbox"]{width:14px;height:14px;cursor:pointer;accent-color:#ffd700}
@@ -769,13 +1203,13 @@ function createStyles(){
     .flee-role-badge.good{background:rgba(68,255,136,0.2);color:#56d364}
     
     #flee-lobby-toggle{position:fixed;right:12px;bottom:12px;z-index:100010;width:28px;height:28px;border-radius:6px;background:rgba(0,0,0,0.6);color:#fff;border:1px solid rgba(255,255,255,0.2);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:all 0.3s}
-    #flee-lobby-toggle:hover{background:rgba(74,158,255,0.8);transform:scale(1.1)}
+    #flee-lobby-toggle:hover{background:rgba(var(--flee-border-rgb),0.8);transform:scale(1.1)}
     
     #flee-create-lobby{max-height:70vh;overflow-y:auto;padding-right:10px}
     #flee-create-lobby::-webkit-scrollbar{width:8px}
-    #flee-create-lobby::-webkit-scrollbar-track{background:#1a2942;border-radius:4px}
-    #flee-create-lobby::-webkit-scrollbar-thumb{background:#4a9eff;border-radius:4px}
-    #flee-create-lobby::-webkit-scrollbar-thumb:hover{background:#6ab0ff}
+    #flee-create-lobby::-webkit-scrollbar-track{background:rgba(var(--flee-bg-rgb),0.75);border-radius:4px}
+    #flee-create-lobby::-webkit-scrollbar-thumb{background:var(--flee-border);border-radius:4px}
+    #flee-create-lobby::-webkit-scrollbar-thumb:hover{background:rgba(var(--flee-border-rgb),0.75)}
     
     .flee-section-header{display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;user-select:none;transition:all 0.2s}
     .flee-section-header:hover{opacity:0.8}
@@ -787,6 +1221,64 @@ function createStyles(){
   const style = document.createElement('style');
   style.textContent = css;
   document.head.appendChild(style);
+}
+
+function buildThemeSection(moduleKey, title) {
+  const t = ThemeManager.get(moduleKey);
+  return `
+    <div class="flee-theme-section" data-theme-module="${moduleKey}" style="background:rgba(255,255,255,0.04);border:1px solid rgba(var(--flee-border-rgb),0.25);border-radius:10px;padding:12px">
+      <h3 style="margin:0 0 10px 0;color:var(--flee-text)">${title}</h3>
+      <label style="display:block;color:var(--flee-text)">Fondo <input type="color" data-prop="bg" value="${t.bg}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Texto <input type="color" data-prop="text" value="${t.text}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Borde <input type="color" data-prop="border" value="${t.border}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Interno <input type="color" data-prop="internal" value="${t.internal}" style="float:right"></label>
+      <label style="display:block;color:var(--flee-text)">Gradient <input type="color" data-prop="gradient" value="${t.gradient}" style="float:right"></label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+        <button class="flee-small" data-theme-action="reset">Restablecer por defecto</button>
+        <button class="flee-small" data-theme-action="copy">Utilizar misma personalización que la anterior</button>
+        <button class="flee-small" data-theme-action="save" style="background:var(--flee-border);color:var(--flee-bg-solid)">Guardar</button>
+      </div>
+    </div>
+  `;
+}
+
+function setupThemeManagerUI() {
+  const root = $('#flee-theme-manager-sections');
+  if (!root || root.dataset.bound === '1') return;
+  const modules = [
+    ['userPanel', '1. Panel de usuario'],
+    ['proximity', '2. Ventanas de proximidad'],
+    ['startup', '3. Interfaz de inicio'],
+    ['radar', '4. Radar'],
+    ['notifications', '5. Notificaciones']
+  ];
+  root.innerHTML = modules.map(([k, t]) => buildThemeSection(k, t)).join('');
+  root.dataset.bound = '1';
+
+  root.addEventListener('input', (ev) => {
+    const input = ev.target;
+    if (!input.matches('input[type="color"][data-prop]')) return;
+    const section = input.closest('[data-theme-module]');
+    if (!section) return;
+    ThemeManager.set(section.dataset.themeModule, { [input.dataset.prop]: input.value });
+  });
+
+  root.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-theme-action]');
+    if (!btn) return;
+    const section = btn.closest('[data-theme-module]');
+    if (!section) return;
+    const moduleKey = section.dataset.themeModule;
+    const action = btn.dataset.themeAction;
+    if (action === 'reset') ThemeManager.reset(moduleKey);
+    if (action === 'copy') ThemeManager.copyFromPrevious(moduleKey);
+    if (action === 'save') ThemeManager.save();
+
+    const t = ThemeManager.get(moduleKey);
+    section.querySelectorAll('input[data-prop]').forEach((inp) => {
+      inp.value = t[inp.dataset.prop] || THEME_DEFAULTS[inp.dataset.prop];
+    });
+  });
 }
 
 function createLobbyScreen(){
@@ -802,6 +1294,7 @@ function createLobbyScreen(){
         <button class="flee-nav-btn" data-tab="create">Crear Partida</button>
         <button class="flee-nav-btn" data-tab="profile">Editar Perfil</button>
         <button class="flee-nav-btn" data-tab="roles">Información de Roles</button>
+        <button class="flee-nav-btn" data-tab="personalization">Personalización</button>
       </div>
       <div id="flee-lobby-content">
         <div id="flee-join-lobby" class="flee-tab-content active">
@@ -1031,6 +1524,10 @@ function createLobbyScreen(){
             <button id="save-profile-btn" class="flee-save-btn">💾 Guardar Perfil</button>
           </div>
         </div>
+        <div id="flee-personalization-lobby" class="flee-tab-content" style="display:none">
+          <h2 style="color:var(--flee-text);text-align:center">Personalización</h2>
+          <div id="flee-theme-manager-sections" style="max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px"></div>
+        </div>
         <div id="flee-roles-info" class="flee-tab-content" style="display:none">
           <h2 style="color:var(--flee-text);text-align:center">Información de Roles</h2>
           <div style="max-width:800px;max-height:500px;overflow-y:auto;margin:0 auto;color:var(--flee-text);line-height:1.6;padding:0 10px">
@@ -1080,6 +1577,8 @@ function createLobbyScreen(){
     </div>
   `;
   document.body.appendChild(screen);
+  setupThemeManagerUI();
+  ThemeManager.applyAll();
   
   $all('.flee-nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1315,6 +1814,8 @@ function createWaitingRoomScreen(){
     </div>
   `;
   document.body.appendChild(screen);
+  setupThemeManagerUI();
+  ThemeManager.applyAll();
   
   $('#flee-start-game-btn').addEventListener('click', () => {
     if (currentLobby && currentLobby.creatorName === meName) {
@@ -1607,8 +2108,6 @@ function openProfileModal(targetName) {
   if (!modal) return;
   
   const player = playersMap[targetName] || {};
-  const myRole = rolesByName[meName] || 'innocent';
-  
   $('#flee-profile-avatar').src = player.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(targetName)}`;
   $('#flee-profile-name').textContent = targetName;
   $('#flee-profile-desc').textContent = player.description || '';
@@ -1636,11 +2135,6 @@ function openProfileModal(targetName) {
   
   const actionsEl = $('#flee-profile-actions');
   actionsEl.innerHTML = '';
-  
-  if (targetName !== meName && player.alive !== false && currentPhase === 'running' && revealedRoleForMe) {
-    const buttons = getActionButtonsForRole(myRole, targetName);
-    buttons.forEach(btn => actionsEl.appendChild(btn));
-  }
   
   modal.classList.add('active');
 }
@@ -1712,21 +2206,14 @@ function getActionButtonsForRole(myRole, targetName) {
     buttons.push(createActionButton('🐈‍⬛ Atacar', 'spy_attack', () => doSpyAttack(targetName)));
   }
   
-  if (myRole === 'carpenter') {
-    if (cooldowns.carpenter_builds < 3) {
-      buttons.push(createActionButton('🔨 Construir barricada', 'build', () => doBuildBarricade(targetName)));
-    }
-  }
   
-  if (myRole === 'joker') {
-    buttons.push(createActionButton('🃏 Distraer', 'joker', () => triggerJokerDistract()));
-  }
   
   return buttons;
 }
 
 function createActionButton(text, type, onClick) {
   const btn = document.createElement('button');
+  btn.type = 'button';
   btn.className = `flee-action-btn ${type}`;
   btn.innerHTML = text;
   
@@ -1736,9 +2223,19 @@ function createActionButton(text, type, onClick) {
     const remaining = Math.ceil((cooldowns[cooldownKey] - Date.now()) / 1000);
     btn.innerHTML = `${text} (${remaining}s)`;
   }
+
+  const clearPressedState = () => btn.classList.remove('is-pressed');
+  btn.addEventListener('pointerdown', () => {
+    if (!btn.disabled) btn.classList.add('is-pressed');
+  });
+  btn.addEventListener('pointerup', clearPressedState);
+  btn.addEventListener('pointercancel', clearPressedState);
+  btn.addEventListener('mouseleave', clearPressedState);
+  btn.addEventListener('blur', clearPressedState);
   
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (btn.disabled) return;
     onClick();
   });
   
@@ -2678,21 +3175,7 @@ function doShoot(targetName) {
 }
 
 function doBuildBarricade(targetName) {
-  if (cooldowns.carpenter_builds >= 3) {
-    showNotification('❌ Máximo de barricadas alcanzado', 1500);
-    return;
-  }
-  if (abilityBlocked) {
-    showNotification('⛔ Tu habilidad está bloqueada', 1500);
-    return;
-  }
-  
-  const targetPlayer = playersMap[targetName];
-  const pos = targetPlayer && targetPlayer.position ? targetPlayer.position : { x: 0.5, y: 0.5 };
-  
-  cooldowns.carpenter_builds++;
-  wsSend({ t: 'carpenterBuild', target: targetName, by: meName, x: pos.x, y: pos.y });
-  showNotification(`🔨 Construyendo barricada cerca de ${targetName}`, 2000);
+  triggerCarpenterBuild();
   closeProfileModal();
 }
 
@@ -2952,7 +3435,7 @@ function createCarpenterButton() {
   
   const btn = document.createElement('button');
   btn.id = 'flee-carpenter-floating';
-  btn.innerHTML = `🔨 Construir (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`;
+  btn.innerHTML = '🧱 Barricada';
   Object.assign(btn.style, {
     position: 'fixed',
     left: '12px',
@@ -2974,10 +3457,6 @@ function createCarpenterButton() {
     e.preventDefault();
     if (abilityBlocked && abilityBlockedUntil > Date.now()) {
       showNotification('⛔ ¡Tus habilidades están bloqueadas!', 2000);
-      return;
-    }
-    if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-      showNotification('¡Ya has construido el máximo de barricadas!', 2000);
       return;
     }
     triggerCarpenterBuild();
@@ -3015,34 +3494,40 @@ function updateCarpenterButtonVisuals() {
   // Reset background to normal
   _carpenterFloatingBtn.style.background = 'linear-gradient(135deg, #8B4513, #A0522D)';
   
-  _carpenterFloatingBtn.innerHTML = `🔨 Construir (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`;
-  if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-    _carpenterFloatingBtn.style.opacity = '0.5';
+  const remaining = Math.max(0, Math.ceil((cooldowns.carpenter_barricade - Date.now()) / 1000));
+  if (isOnCooldown('carpenter_barricade')) {
+    _carpenterFloatingBtn.innerHTML = `🧱 Barricada (${remaining}s)`;
+    _carpenterFloatingBtn.style.opacity = '0.7';
     _carpenterFloatingBtn.disabled = true;
   } else {
+    _carpenterFloatingBtn.innerHTML = '🧱 Barricada';
     _carpenterFloatingBtn.style.opacity = '1';
     _carpenterFloatingBtn.disabled = false;
   }
 }
 
 function triggerCarpenterBuild() {
-  if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-    showNotification('❌ Máximo de barricadas alcanzado', 1500);
-    return;
-  }
   if (abilityBlocked && abilityBlockedUntil > Date.now()) {
     showNotification('⛔ Tu habilidad está bloqueada', 1500);
     return;
   }
-  
+
+  if (isOnCooldown('carpenter_barricade')) {
+    const remaining = Math.ceil((cooldowns.carpenter_barricade - Date.now()) / 1000);
+    showNotification(`⏳ Cooldown: ${remaining}s`, 1500);
+    return;
+  }
+
+  setCooldown('carpenter_barricade', CARPENTER_BARRICADE_COOLDOWN_MS);
+
   const currentPosition = window._lastKnownPosition || { x: 0.5, y: 0.5 };
-  
-  wsSend({ 
-    t: 'carpenterBuild', 
+
+  wsSend({
+    t: 'carpenterBuild',
     by: meName,
     position: currentPosition
   });
-  showNotification('🔨 Construyendo barricada en tu posición...', 2000);
+  showNotification('🧱 Barricada desplegada globalmente', 2000);
   flashOverlay('rgba(160, 82, 45, 0.3)');
 }
 
@@ -3067,7 +3552,7 @@ function resetGameState() {
   cooldowns.jorguin_attack = 0;
   cooldowns.spy_investigate = 0;
   cooldowns.spy_attack = 0;
-  cooldowns.carpenter_builds = 0;
+  cooldowns.carpenter_barricade = 0;
   cooldowns.joker_distract = 0;
   
   myTasksCompleted = 0;
@@ -3094,10 +3579,15 @@ function resetGameState() {
   
   distractionActive = false;
   revealedRoleForMe = false;
-  carpenterBuildsUsed = 0;
+  controlLockState.jorguinCurseUntil = 0;
+  controlLockState.psychicFrozenUntil = 0;
+  controlLockState.sprintForcedByCurse = false;
+  clearExterminateTimerState();
+  window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
   investigatedPlayers.length = 0;
+  spyInvestigatedPlayers.length = 0;
   Object.keys(publicReveals).forEach(k => delete publicReveals[k]);
   
   removeJokerButton();
@@ -3194,13 +3684,6 @@ function setupDragAndDrop(uiWrap, resetScreen) {
 }
 
 function setupCustomizationModal() {
-  const DEFAULT_CUSTOM = {
-    bg: '#0a1628',
-    bgOpacity: 0.92,
-    border: '#4a9eff',
-    text: '#e9eef7'
-  };
-  
   $('#flee-customize-btn').addEventListener('click', () => {
     $('#flee-custom-modal').style.display = 'flex';
     $('#cust-bg').value = custom.bg;
@@ -3215,20 +3698,20 @@ function setupCustomizationModal() {
   });
   
   $('#cust-reset').addEventListener('click', () => {
-    custom.bg = DEFAULT_CUSTOM.bg;
-    custom.bgOpacity = DEFAULT_CUSTOM.bgOpacity;
-    custom.border = DEFAULT_CUSTOM.border;
-    custom.text = DEFAULT_CUSTOM.text;
+    custom.bg = DEFAULT_CUSTOM_THEME.bg;
+    custom.bgOpacity = DEFAULT_CUSTOM_THEME.bgOpacity;
+    custom.border = DEFAULT_CUSTOM_THEME.border;
+    custom.text = DEFAULT_CUSTOM_THEME.text;
     
-    $('#cust-bg').value = DEFAULT_CUSTOM.bg;
-    $('#cust-opacity').value = DEFAULT_CUSTOM.bgOpacity;
-    $('#cust-border').value = DEFAULT_CUSTOM.border;
-    $('#cust-text').value = DEFAULT_CUSTOM.text;
+    $('#cust-bg').value = DEFAULT_CUSTOM_THEME.bg;
+    $('#cust-opacity').value = DEFAULT_CUSTOM_THEME.bgOpacity;
+    $('#cust-border').value = DEFAULT_CUSTOM_THEME.border;
+    $('#cust-text').value = DEFAULT_CUSTOM_THEME.text;
     
-    localStorage.setItem('flee_custom_bg', DEFAULT_CUSTOM.bg);
-    localStorage.setItem('flee_custom_bgOpacity', DEFAULT_CUSTOM.bgOpacity.toString());
-    localStorage.setItem('flee_custom_border', DEFAULT_CUSTOM.border);
-    localStorage.setItem('flee_custom_text', DEFAULT_CUSTOM.text);
+    localStorage.setItem('flee_custom_bg', DEFAULT_CUSTOM_THEME.bg);
+    localStorage.setItem('flee_custom_bgOpacity', DEFAULT_CUSTOM_THEME.bgOpacity.toString());
+    localStorage.setItem('flee_custom_border', DEFAULT_CUSTOM_THEME.border);
+    localStorage.setItem('flee_custom_text', DEFAULT_CUSTOM_THEME.text);
     
     setCssVarsForCustom(custom.bg, custom.bgOpacity, custom.border, custom.text);
     populateCustomizePreview();
@@ -3236,10 +3719,10 @@ function setupCustomizationModal() {
   });
   
   $('#cust-save').addEventListener('click', () => {
-    custom.bg = $('#cust-bg').value;
-    custom.bgOpacity = parseFloat($('#cust-opacity').value);
-    custom.border = $('#cust-border').value;
-    custom.text = $('#cust-text').value;
+    custom.bg = sanitizeHexColor($('#cust-bg').value, DEFAULT_CUSTOM_THEME.bg);
+    custom.bgOpacity = clampOpacity($('#cust-opacity').value);
+    custom.border = sanitizeHexColor($('#cust-border').value, DEFAULT_CUSTOM_THEME.border);
+    custom.text = sanitizeHexColor($('#cust-text').value, DEFAULT_CUSTOM_THEME.text);
     
     localStorage.setItem('flee_custom_bg', custom.bg);
     localStorage.setItem('flee_custom_bgOpacity', custom.bgOpacity.toString());
@@ -3255,10 +3738,10 @@ function setupCustomizationModal() {
     const el = $('#' + id);
     if (el) {
       el.addEventListener('input', () => {
-        const bg = $('#cust-bg').value;
-        const op = parseFloat($('#cust-opacity').value);
-        const border = $('#cust-border').value;
-        const text = $('#cust-text').value;
+        const bg = sanitizeHexColor($('#cust-bg').value, DEFAULT_CUSTOM_THEME.bg);
+        const op = clampOpacity($('#cust-opacity').value);
+        const border = sanitizeHexColor($('#cust-border').value, DEFAULT_CUSTOM_THEME.border);
+        const text = sanitizeHexColor($('#cust-text').value, DEFAULT_CUSTOM_THEME.text);
         setCssVarsForCustom(bg, op, border, text);
         populateCustomizePreview();
       });
@@ -3353,6 +3836,11 @@ function createUI(){
   blockedOverlay.id = 'flee-blocked-overlay';
   blockedOverlay.innerHTML = '<div id="flee-blocked-msg"><div id="flee-blocked-timer">0s</div><div>⛔ Hechizado - Habilidades bloqueadas</div></div>';
   document.body.appendChild(blockedOverlay);
+
+  const exterminateTimer = document.createElement('div');
+  exterminateTimer.id = 'flee-exterminate-timer';
+  exterminateTimer.style.display = 'none';
+  document.body.appendChild(exterminateTimer);
   
   const readyOverlay = document.createElement('div');
   readyOverlay.id = 'flee-ready-overlay';
@@ -3396,7 +3884,7 @@ function createUI(){
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
         <button id="cust-reset" class="flee-small">Reset por defecto</button>
         <button id="cust-close" class="flee-small">Cerrar</button>
-        <button id="cust-save" class="flee-small" style="background:var(--flee-border);color:#0a1628">Guardar</button>
+        <button id="cust-save" class="flee-small" style="background:var(--flee-border);color:var(--flee-bg-solid)">Guardar</button>
       </div>
     </div>
   `;
@@ -3591,7 +4079,7 @@ function updateTasksUI(){
     if (myTasksCompleted >= myTasksTotal && myTasksTotal > 0) {
       myTasksEl.style.color = '#2ecc71';
     } else {
-      myTasksEl.style.color = '#4a9eff';
+      myTasksEl.style.color = 'var(--flee-border)';
     }
   }
   
@@ -3614,23 +4102,49 @@ function updateCoinsUI(){
 
 let activeNotifications = [];
 
-function showNotification(message, duration = 3000){
-  const notif = document.createElement('div');
-  notif.className = 'flee-notification';
-  notif.textContent = message;
-  
-  const topOffset = 20 + (activeNotifications.length * 60);
-  notif.style.top = topOffset + 'px';
-  
-  document.body.appendChild(notif);
-  activeNotifications.push(notif);
-  
+function removeNotificationElement(notif) {
+  if (!notif || notif.dataset.removing === '1') return;
+  notif.dataset.removing = '1';
+  if (notif._dismissTimer) {
+    clearTimeout(notif._dismissTimer);
+    notif._dismissTimer = null;
+  }
+  notif.classList.add('is-leaving');
   setTimeout(() => {
     notif.remove();
     activeNotifications = activeNotifications.filter(n => n !== notif);
-    activeNotifications.forEach((n, i) => {
-      n.style.top = (20 + i * 60) + 'px';
-    });
+  }, 220);
+}
+
+function showNotification(message, duration = 3000){
+  const notif = document.createElement('div');
+  notif.className = 'flee-notification';
+
+  const mentionedPlayer = findMentionedPlayerName(message);
+  if (mentionedPlayer) {
+    const avatar = document.createElement('img');
+    avatar.className = 'notif-avatar';
+    avatar.src = getAvatarForPlayer(mentionedPlayer);
+    avatar.alt = mentionedPlayer;
+    notif.appendChild(avatar);
+  }
+
+  const text = document.createElement('div');
+  text.className = 'notif-text';
+  text.textContent = message;
+  notif.appendChild(text);
+
+  const stack = getToastStack();
+  stack.appendChild(notif);
+  activeNotifications.push(notif);
+
+  const MAX_NOTIFICATIONS = 5;
+  if (activeNotifications.length > MAX_NOTIFICATIONS) {
+    removeNotificationElement(activeNotifications[0]);
+  }
+
+  notif._dismissTimer = setTimeout(() => {
+    removeNotificationElement(notif);
   }, duration);
 }
 
@@ -3709,7 +4223,7 @@ function showVictoryScreen(title, subtitle, color) {
   const p = content.querySelector('p');
   p.style.cssText = `
     font-size: 24px;
-    color: #e9eef7;
+    color: var(--flee-text);
     margin: 0 0 30px 0;
   `;
   
@@ -3731,6 +4245,7 @@ window.addEventListener('message', (ev) => {
   
   if (ev.data.source === 'radar-admin' && ev.data.type === 'positionUpdate') {
     window._lastKnownPosition = ev.data.position;
+    window.islandPlayerPos = ev.data.position;
     
     // Send position to server periodically for tracking
     const now = Date.now();
@@ -3908,7 +4423,7 @@ function showFinalRole(){
     setRoleText(myRole);
     revealedRoleForMe = true;
     createJokerButton();
-    createCarpenterButton();
+    removeCarpenterButton();
     refreshPlayersUI();
     showReadyOverlay();
   }, 3000);
@@ -4065,6 +4580,7 @@ function handleWsMessage(msg){
       break;
     case 'yourRole':
       rolesByName[meName] = msg.role;
+      updateInventoryUI();
       break;
     case 'coinsSpawned':
       if (msg.enabled || msg.coins) {
@@ -4155,14 +4671,31 @@ function handleWsMessage(msg){
     case 'frozen':
       frozen = true;
       frozenUntil = Date.now() + msg.duration;
+      controlLockState.psychicFrozenUntil = frozenUntil;
+      syncControlLockState();
       $('#flee-frozen-overlay').style.display = 'flex';
       simulateKeyJ();
       setTimeout(() => clickPlayButton(), 150);
       updateFrozenTimer();
       break;
+    case 'exterminateTimer': {
+      const isTarget = !msg.target && !!msg.attacker;
+      startExterminateTimerState({
+        end: msg.end || (Date.now() + 60000),
+        target: msg.target || meName,
+        attacker: msg.attacker || meName,
+        perspective: isTarget ? 'target' : 'attacker'
+      });
+      break;
+    }
+    case 'notification':
+      showNotification(msg.msg || msg.message || 'Aviso', 4000);
+      break;
     case 'abilityBlocked':
       abilityBlocked = true;
       abilityBlockedUntil = Date.now() + msg.duration;
+      controlLockState.jorguinCurseUntil = abilityBlockedUntil;
+      syncControlLockState();
       $('#flee-blocked-overlay').style.display = 'flex';
       updateBlockedTimer();
       showNotification('⛔ Tu habilidad fue bloqueada', 3000);
@@ -4211,15 +4744,30 @@ function handleWsMessage(msg){
     case 'spyInvestigationResult':
       showNotification(`🐈‍⬛ ${msg.target} es ${translateRole(msg.role)}`, 5000);
       investigatedPlayers.push(msg.target);
+      if (!spyInvestigatedPlayers.includes(msg.target)) spyInvestigatedPlayers.push(msg.target);
       window.postMessage({ source: 'radar-admin', type: 'trackPlayer', name: msg.target, role: msg.role }, '*');
       break;
     case 'trackedPlayerPosition':
+      if (msg.name && msg.position) {
+        trackedPlayerPositions[msg.name] = msg.position;
+        if (playersMap[msg.name]) {
+          playersMap[msg.name].position = msg.position;
+        }
+      }
       window.postMessage({
         source: 'radar-admin',
         type: 'updateTrackedPlayerPosition',
         name: msg.name,
         position: msg.position
       }, '*');
+      break;
+    case 'playerPositionUpdate':
+      if (msg.name && msg.position) {
+        trackedPlayerPositions[msg.name] = msg.position;
+        if (playersMap[msg.name]) {
+          playersMap[msg.name].position = msg.position;
+        }
+      }
       break;
     case 'publicRoleReveal':
       publicReveals[msg.target] = msg.role;
@@ -4228,6 +4776,9 @@ function handleWsMessage(msg){
     case 'playerDied':
       if (playersMap[msg.name]) {
         playersMap[msg.name].alive = false;
+      }
+      if (exterminateTimerState.active && (msg.name === exterminateTimerState.target || msg.name === meName)) {
+        clearExterminateTimerState();
       }
       refreshPlayersUI();
       if (msg.name === meName) {
@@ -4247,10 +4798,8 @@ function handleWsMessage(msg){
     case 'barricadeBuilt':
       barricades.push(msg.barricade);
       window.postMessage({ source: 'radar-admin', type: 'barricadeCreated', barricade: msg.barricade }, '*');
-      carpenterBuildsUsed++;
-      cooldowns.carpenter_builds = carpenterBuildsUsed;
       updateCarpenterButtonVisuals();
-      showNotification(`🔨 Barricada construida! (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`, 2000);
+      showNotification('🧱 Barricada desplegada', 2000);
       break;
     case 'barricadeUpdate':
       {
@@ -4327,6 +4876,7 @@ function handleWsMessage(msg){
           if (p && p.name) playersMap[p.name] = p;
         });
       }
+      updateProximityWindows();
       refreshPlayersUI();
       break;
     case 'playerDisconnected':
@@ -4351,6 +4901,7 @@ function handleWsMessage(msg){
       }
       updateJokerButton();
       updateCarpenterButton();
+      updateInventoryUI();
       break;
     case 'readyUpdate':
       updateReadyCounter(msg.readyCount, msg.totalPlayers);
@@ -4383,6 +4934,8 @@ function updateFrozenTimer(){
   
   if (remaining <= 0) {
     frozen = false;
+    controlLockState.psychicFrozenUntil = 0;
+    syncControlLockState();
     $('#flee-frozen-overlay').style.display = 'none';
   } else {
     setTimeout(updateFrozenTimer, 100);
@@ -4401,6 +4954,10 @@ function updateBlockedTimer(){
   if (remaining <= 0) {
     abilityBlocked = false;
     abilityBlockedUntil = 0;
+    if (controlLockState.jorguinCurseUntil <= Date.now()) {
+      controlLockState.jorguinCurseUntil = 0;
+    }
+    syncControlLockState();
     $('#flee-blocked-overlay').style.display = 'none';
     // Restore floating buttons to normal state
     updateJokerButtonVisuals();
@@ -4414,9 +4971,20 @@ let sprintExhaustedTriggered = false;
 
 function sprintLoop(ts){
   const dt = 0.016;
-  
+
+  syncControlLockState();
+
   if (frozen || abilityBlocked) {
     sprint.draining = false;
+  }
+
+  if (isJorguinCurseActive()) {
+    sprint.value = 0;
+    sprint.exhausted = true;
+    sprint.draining = false;
+    updateSprintUI();
+    requestAnimationFrame(sprintLoop);
+    return;
   }
   
   if (sprint.exhausted) {
@@ -4433,6 +5001,9 @@ function sprintLoop(ts){
   
   if (hasSpeedBuff) {
     sprint.value = sprint.max;
+    if (sprint.exhausted || sprintExhaustedTriggered) {
+      window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
+    }
     sprint.exhausted = false;
     sprintExhaustedTriggered = false;
   } else if (sprint.draining && sprint.value > 0) {
@@ -4455,10 +5026,10 @@ function sprintLoop(ts){
     }
     if (sprint.value < sprint.max) {
       sprint.value = Math.min(sprint.max, sprint.value + (sprint.regenRate * dt));
-      if (sprint.value >= sprint.max) {
+      if (sprint.exhausted && sprint.value >= sprint.max && !isJorguinCurseActive()) {
         sprint.exhausted = false;
         sprintExhaustedTriggered = false;
-        // Unblock sprint in radar
+        // Unblock sprint in radar after minimum recovery threshold
         window.postMessage({ source: 'radar-admin', type: 'setSprintBlocked', blocked: false }, '*');
       }
     }
@@ -4469,10 +5040,18 @@ function sprintLoop(ts){
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Shift' && !sprint.exhausted && !frozen && !abilityBlocked) {
-    sprint.draining = true;
+  if (e.key === 'Shift') {
+    if (isJorguinCurseActive() || isPsychicFreezeActive() || sprint.exhausted || sprint.value <= 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      sprint.draining = false;
+      return;
+    }
+    if (!frozen && !abilityBlocked) {
+      sprint.draining = true;
+    }
   }
-});
+}, true);
 
 window.addEventListener('keyup', (e) => {
   if (e.key === 'Shift') {
@@ -4488,11 +5067,14 @@ window.addEventListener('keydown', (e) => {
 }, true);
 
 function initAll(){
+  ThemeManager.applyAll();
   createStyles();
   createLobbyScreen();
   createToggleLobbyButton();
   createWaitingRoomScreen();
   createUI();
+  ensureNotificationsContainer();
+  proximitySystem.start();
   wsConnect();
   requestAnimationFrame(sprintLoop);
   setupNotificationObservers();
