@@ -32,85 +32,119 @@ let lastInvestigatedTarget = null;
 const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenRate: 8, drainRate: 20 };
 
 let proximityWindows = {}; // { targetName: { element, lastUpdate } }
+const trackedPlayerPositions = {};
+
+function createProximitySystem() {
+  const BASE_THRESHOLD = 0.12;
+  const EXTENDED_THRESHOLD = 0.25;
+  let checkInterval = null;
+
+  function getContainer() {
+    let container = $('#flee-notifications-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'flee-notifications-container';
+      document.body.appendChild(container);
+    }
+    return container;
+  }
+
+  function getDetectionThreshold(targetName) {
+    if (revealedRoleForMe === 'sheriff') return EXTENDED_THRESHOLD;
+    if (revealedRoleForMe === 'spy' && investigatedPlayers.includes(targetName)) return EXTENDED_THRESHOLD;
+    return BASE_THRESHOLD;
+  }
+
+  function getPlayerPosition(playerName, playerData) {
+    if (playerData && playerData.position && typeof playerData.position.x === 'number' && typeof playerData.position.y === 'number') {
+      return playerData.position;
+    }
+    if (trackedPlayerPositions[playerName]) {
+      return trackedPlayerPositions[playerName];
+    }
+    return null;
+  }
+
+  function showWindow(playerName, playerData) {
+    let win = proximityWindows[playerName];
+    if (!win) {
+      const el = document.createElement('div');
+      el.className = 'flee-proximity-window';
+      el.innerHTML = `
+        <img src="${playerData.avatarUrl || ''}" class="prox-avatar" alt="${escapeHTML(playerName)}">
+        <div class="prox-info">
+          <div class="prox-name">${escapeHTML(playerName)}</div>
+          <div class="prox-actions" data-player="${escapeHTML(playerName)}"></div>
+        </div>
+      `;
+      getContainer().prepend(el);
+      win = { element: el };
+      proximityWindows[playerName] = win;
+    }
+
+    const avatar = win.element.querySelector('.prox-avatar');
+    if (avatar && playerData.avatarUrl) avatar.src = playerData.avatarUrl;
+  }
+
+  function update() {
+    const myPos = window.islandPlayerPos || window._lastKnownPosition;
+    if (!myPos) return;
+
+    Object.entries(playersMap).forEach(([playerName, playerData]) => {
+      if (playerName === meName || !playerData || !playerData.alive || playerData.connected === false) {
+        removeProximityWindow(playerName);
+        return;
+      }
+
+      const targetPos = getPlayerPosition(playerName, playerData);
+      if (!targetPos) {
+        removeProximityWindow(playerName);
+        return;
+      }
+
+      const dist = Math.hypot(targetPos.x - myPos.x, targetPos.y - myPos.y);
+      const threshold = getDetectionThreshold(playerName);
+
+      if (dist <= threshold) {
+        showWindow(playerName, playerData);
+        showProximityWindow(playerName, playerData);
+      } else {
+        removeProximityWindow(playerName);
+      }
+    });
+  }
+
+  function start() {
+    if (checkInterval) return;
+    getContainer();
+    checkInterval = setInterval(update, 250);
+  }
+
+  return { start, update };
+}
+
+const proximitySystem = createProximitySystem();
 
 function updateProximityWindows() {
-  const myPos = window.islandPlayerPos || { x: 0.5, y: 0.5 };
-  const entries = Object.entries(playersMap);
-  
-  entries.forEach(([name, p]) => {
-    if (name === meName || !p.alive || !p.connected) {
-      removeProximityWindow(name);
-      return;
-    }
-
-    const dist = Math.hypot(p.position.x - myPos.x, p.position.y - myPos.y);
-    let threshold = 0.12;
-    
-    // Alguacil: mayor rango
-    if (revealedRoleForMe === 'sheriff') threshold = 0.25;
-    // Espía: mayor rango con ya espiados
-    if (revealedRoleForMe === 'spy' && investigatedPlayers.includes(name)) threshold = 0.25;
-
-    if (dist < threshold) {
-      showProximityWindow(name, p);
-    } else {
-      removeProximityWindow(name);
-    }
-  });
+  proximitySystem.update();
 }
 
 function showProximityWindow(name, p) {
   let win = proximityWindows[name];
   if (!win) {
-    const el = document.createElement('div');
-    el.className = 'flee-proximity-window';
-    el.innerHTML = `
-      <img src="${p.avatarUrl || ''}" class="prox-avatar">
-      <div class="prox-info">
-        <div class="prox-name">${escapeHTML(name)}</div>
-        <div class="prox-actions"></div>
-      </div>
-    `;
-    $('#flee-notifications-container').prepend(el);
-    win = { element: el };
-    proximityWindows[name] = win;
+    return;
   }
-  
+
   const actions = win.element.querySelector('.prox-actions');
+  if (!actions) return;
+
   actions.innerHTML = '';
-  
+
   if (abilityBlocked) return;
 
-  const role = revealedRoleForMe;
-  if (role === 'killer') {
-    createProxBtn(actions, '🗡️ Atacar', () => wsSend({ t: 'attack', target: name }));
-  } else if (role === 'medic') {
-    createProxBtn(actions, '💊 Curar', () => wsSend({ t: 'heal', target: name }));
-  } else if (role === 'detective') {
-    createProxBtn(actions, '🔍 Investigar', () => wsSend({ t: 'investigate', target: name }));
-  } else if (role === 'sheriff') {
-    createProxBtn(actions, '🎯 Disparar', () => wsSend({ t: 'sheriffShoot', target: name }));
-  } else if (role === 'jorguin') {
-    createProxBtn(actions, '🪄 Hechizar', () => wsSend({ t: 'jorguinBlock', target: name }));
-    createProxBtn(actions, '⚔️ Atacar', () => wsSend({ t: 'jorguinAttack', target: name }));
-  } else if (role === 'spy') {
-    createProxBtn(actions, '👁️ Espiar', () => wsSend({ t: 'spyInvestigate', target: name }));
-    createProxBtn(actions, '🔪 Atacar', () => wsSend({ t: 'spyAttack', target: name }));
-  } else if (role === 'psychic') {
-    createProxBtn(actions, '🧊 Congelar', () => wsSend({ t: 'freezePlayer', target: name }));
-    createProxBtn(actions, '💀 Exterminar', () => wsSend({ t: 'exterminatePlayer', target: name }));
-  } else if (role === 'bodyguard') {
-    const btn = createProxBtn(actions, '🛡️ Proteger', () => {
-       if (guardState.protecting === name) {
-         guardState.protecting = null;
-         wsSend({ t: 'protect', target: null });
-       } else {
-         guardState.protecting = name;
-         wsSend({ t: 'protect', target: name });
-       }
-    });
-    if (guardState.protecting === name) btn.classList.add('active');
-  }
+  const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+  const buttons = getActionButtonsForRole(myRole, name);
+  buttons.forEach(btn => actions.appendChild(btn));
 }
 
 function createProxBtn(container, text, onclick) {
@@ -151,7 +185,7 @@ const cooldowns = {
   jorguin_attack: 0,
   spy_investigate: 0,
   spy_attack: 0,
-  carpenter_builds: 0,
+  carpenter_barricade: 0,
   joker_distract: 0
 };
 
@@ -172,8 +206,7 @@ let jokerCooldownInterval = null;
 
 let _jokerFloatingBtn = null;
 let _carpenterFloatingBtn = null;
-let carpenterBuildsUsed = 0;
-const MAX_CARPENTER_BUILDS = 5;
+const CARPENTER_BARRICADE_COOLDOWN_MS = 240000;
 
 let myCoins = 0;
 let coinsOnMap = [];
@@ -193,7 +226,9 @@ const ITEM_INFO = {
   bomba_humo: { name: 'Bomba de humo', emoji: '💨', type: 'active', requiresTarget: true },
   manoplas: { name: 'Manoplas', emoji: '🥊', type: 'passive' },
   daga: { name: 'Daga', emoji: '🗡️', type: 'passive' },
-  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false }
+  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false },
+  globos_joker: { name: 'Globos', emoji: '🎈', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'joker' },
+  barricada_carpintero: { name: 'Barricada', emoji: '🧱', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'carpenter' }
 };
 
 function getInventoryItemCount(itemId) {
@@ -204,45 +239,62 @@ function hasItem(itemId) {
   return getInventoryItemCount(itemId) > 0;
 }
 
+function isJokerActiveRole() {
+  return rolesByName[meName] === 'joker' || revealedRoleForMe === 'joker';
+}
+
+function isCarpenterActiveRole() {
+  return rolesByName[meName] === 'carpenter' || revealedRoleForMe === 'carpenter';
+}
+
 function updateInventoryUI() {
   const section = $('#flee-inventory-section');
   const container = $('#flee-inventory-items');
   if (!section || !container) return;
-  
-  if (myInventory.length === 0) {
+
+  const showJokerItem = isJokerActiveRole();
+  const showCarpenterItem = isCarpenterActiveRole();
+  if (myInventory.length === 0 && !showJokerItem && !showCarpenterItem) {
     section.style.display = 'none';
     return;
   }
-  
+
   section.style.display = 'block';
-  
+
   const itemCounts = {};
   myInventory.forEach(id => {
     itemCounts[id] = (itemCounts[id] || 0) + 1;
   });
-  
+
+  if (showJokerItem) {
+    itemCounts.globos_joker = '∞';
+  }
+  if (showCarpenterItem) {
+    itemCounts.barricada_carpintero = '∞';
+  }
+
   container.innerHTML = '';
   Object.entries(itemCounts).forEach(([itemId, count]) => {
     const info = ITEM_INFO[itemId];
     if (!info) return;
-    
+
     const item = document.createElement('div');
     item.className = 'flee-inventory-item' + (info.type === 'passive' ? ' passive' : '');
-    
+
     if (info.type === 'active' && itemEffects.hourglassUntil > Date.now() && itemId === 'reloj_arena') {
       item.classList.add('active-effect');
     }
-    
+
     item.innerHTML = `
       <span class="item-emoji">${info.emoji}</span>
       <span class="item-name">${info.name}</span>
       <span class="item-count">x${count}</span>
     `;
-    
+
     if (info.type === 'active') {
       item.onclick = () => startItemUse(itemId);
     }
-    
+
     container.appendChild(item);
   });
 }
@@ -251,6 +303,15 @@ function startItemUse(itemId) {
   const info = ITEM_INFO[itemId];
   if (!info || info.type !== 'active') return;
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+  if (itemId === 'barricada_carpintero') {
+    triggerCarpenterBuild();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -323,6 +384,15 @@ function useItem(itemId, target) {
     return;
   }
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+  if (itemId === 'barricada_carpintero') {
+    triggerCarpenterBuild();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -1607,8 +1677,6 @@ function openProfileModal(targetName) {
   if (!modal) return;
   
   const player = playersMap[targetName] || {};
-  const myRole = rolesByName[meName] || 'innocent';
-  
   $('#flee-profile-avatar').src = player.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(targetName)}`;
   $('#flee-profile-name').textContent = targetName;
   $('#flee-profile-desc').textContent = player.description || '';
@@ -1636,11 +1704,6 @@ function openProfileModal(targetName) {
   
   const actionsEl = $('#flee-profile-actions');
   actionsEl.innerHTML = '';
-  
-  if (targetName !== meName && player.alive !== false && currentPhase === 'running' && revealedRoleForMe) {
-    const buttons = getActionButtonsForRole(myRole, targetName);
-    buttons.forEach(btn => actionsEl.appendChild(btn));
-  }
   
   modal.classList.add('active');
 }
@@ -1712,15 +1775,7 @@ function getActionButtonsForRole(myRole, targetName) {
     buttons.push(createActionButton('🐈‍⬛ Atacar', 'spy_attack', () => doSpyAttack(targetName)));
   }
   
-  if (myRole === 'carpenter') {
-    if (cooldowns.carpenter_builds < 3) {
-      buttons.push(createActionButton('🔨 Construir barricada', 'build', () => doBuildBarricade(targetName)));
-    }
-  }
   
-  if (myRole === 'joker') {
-    buttons.push(createActionButton('🃏 Distraer', 'joker', () => triggerJokerDistract()));
-  }
   
   return buttons;
 }
@@ -2678,21 +2733,7 @@ function doShoot(targetName) {
 }
 
 function doBuildBarricade(targetName) {
-  if (cooldowns.carpenter_builds >= 3) {
-    showNotification('❌ Máximo de barricadas alcanzado', 1500);
-    return;
-  }
-  if (abilityBlocked) {
-    showNotification('⛔ Tu habilidad está bloqueada', 1500);
-    return;
-  }
-  
-  const targetPlayer = playersMap[targetName];
-  const pos = targetPlayer && targetPlayer.position ? targetPlayer.position : { x: 0.5, y: 0.5 };
-  
-  cooldowns.carpenter_builds++;
-  wsSend({ t: 'carpenterBuild', target: targetName, by: meName, x: pos.x, y: pos.y });
-  showNotification(`🔨 Construyendo barricada cerca de ${targetName}`, 2000);
+  triggerCarpenterBuild();
   closeProfileModal();
 }
 
@@ -2952,7 +2993,7 @@ function createCarpenterButton() {
   
   const btn = document.createElement('button');
   btn.id = 'flee-carpenter-floating';
-  btn.innerHTML = `🔨 Construir (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`;
+  btn.innerHTML = '🧱 Barricada';
   Object.assign(btn.style, {
     position: 'fixed',
     left: '12px',
@@ -2974,10 +3015,6 @@ function createCarpenterButton() {
     e.preventDefault();
     if (abilityBlocked && abilityBlockedUntil > Date.now()) {
       showNotification('⛔ ¡Tus habilidades están bloqueadas!', 2000);
-      return;
-    }
-    if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-      showNotification('¡Ya has construido el máximo de barricadas!', 2000);
       return;
     }
     triggerCarpenterBuild();
@@ -3015,34 +3052,40 @@ function updateCarpenterButtonVisuals() {
   // Reset background to normal
   _carpenterFloatingBtn.style.background = 'linear-gradient(135deg, #8B4513, #A0522D)';
   
-  _carpenterFloatingBtn.innerHTML = `🔨 Construir (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`;
-  if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-    _carpenterFloatingBtn.style.opacity = '0.5';
+  const remaining = Math.max(0, Math.ceil((cooldowns.carpenter_barricade - Date.now()) / 1000));
+  if (isOnCooldown('carpenter_barricade')) {
+    _carpenterFloatingBtn.innerHTML = `🧱 Barricada (${remaining}s)`;
+    _carpenterFloatingBtn.style.opacity = '0.7';
     _carpenterFloatingBtn.disabled = true;
   } else {
+    _carpenterFloatingBtn.innerHTML = '🧱 Barricada';
     _carpenterFloatingBtn.style.opacity = '1';
     _carpenterFloatingBtn.disabled = false;
   }
 }
 
 function triggerCarpenterBuild() {
-  if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-    showNotification('❌ Máximo de barricadas alcanzado', 1500);
-    return;
-  }
   if (abilityBlocked && abilityBlockedUntil > Date.now()) {
     showNotification('⛔ Tu habilidad está bloqueada', 1500);
     return;
   }
-  
+
+  if (isOnCooldown('carpenter_barricade')) {
+    const remaining = Math.ceil((cooldowns.carpenter_barricade - Date.now()) / 1000);
+    showNotification(`⏳ Cooldown: ${remaining}s`, 1500);
+    return;
+  }
+
+  setCooldown('carpenter_barricade', CARPENTER_BARRICADE_COOLDOWN_MS);
+
   const currentPosition = window._lastKnownPosition || { x: 0.5, y: 0.5 };
-  
-  wsSend({ 
-    t: 'carpenterBuild', 
+
+  wsSend({
+    t: 'carpenterBuild',
     by: meName,
     position: currentPosition
   });
-  showNotification('🔨 Construyendo barricada en tu posición...', 2000);
+  showNotification('🧱 Barricada desplegada globalmente', 2000);
   flashOverlay('rgba(160, 82, 45, 0.3)');
 }
 
@@ -3067,7 +3110,7 @@ function resetGameState() {
   cooldowns.jorguin_attack = 0;
   cooldowns.spy_investigate = 0;
   cooldowns.spy_attack = 0;
-  cooldowns.carpenter_builds = 0;
+  cooldowns.carpenter_barricade = 0;
   cooldowns.joker_distract = 0;
   
   myTasksCompleted = 0;
@@ -3094,7 +3137,6 @@ function resetGameState() {
   
   distractionActive = false;
   revealedRoleForMe = false;
-  carpenterBuildsUsed = 0;
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
   investigatedPlayers.length = 0;
@@ -3731,6 +3773,8 @@ window.addEventListener('message', (ev) => {
   
   if (ev.data.source === 'radar-admin' && ev.data.type === 'positionUpdate') {
     window._lastKnownPosition = ev.data.position;
+    window.islandPlayerPos = ev.data.position;
+    updateProximityWindows();
     
     // Send position to server periodically for tracking
     const now = Date.now();
@@ -3908,7 +3952,7 @@ function showFinalRole(){
     setRoleText(myRole);
     revealedRoleForMe = true;
     createJokerButton();
-    createCarpenterButton();
+    removeCarpenterButton();
     refreshPlayersUI();
     showReadyOverlay();
   }, 3000);
@@ -4065,6 +4109,7 @@ function handleWsMessage(msg){
       break;
     case 'yourRole':
       rolesByName[meName] = msg.role;
+      updateInventoryUI();
       break;
     case 'coinsSpawned':
       if (msg.enabled || msg.coins) {
@@ -4214,6 +4259,12 @@ function handleWsMessage(msg){
       window.postMessage({ source: 'radar-admin', type: 'trackPlayer', name: msg.target, role: msg.role }, '*');
       break;
     case 'trackedPlayerPosition':
+      if (msg.name && msg.position) {
+        trackedPlayerPositions[msg.name] = msg.position;
+        if (playersMap[msg.name]) {
+          playersMap[msg.name].position = msg.position;
+        }
+      }
       window.postMessage({
         source: 'radar-admin',
         type: 'updateTrackedPlayerPosition',
@@ -4247,10 +4298,8 @@ function handleWsMessage(msg){
     case 'barricadeBuilt':
       barricades.push(msg.barricade);
       window.postMessage({ source: 'radar-admin', type: 'barricadeCreated', barricade: msg.barricade }, '*');
-      carpenterBuildsUsed++;
-      cooldowns.carpenter_builds = carpenterBuildsUsed;
       updateCarpenterButtonVisuals();
-      showNotification(`🔨 Barricada construida! (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`, 2000);
+      showNotification('🧱 Barricada desplegada', 2000);
       break;
     case 'barricadeUpdate':
       {
@@ -4327,6 +4376,7 @@ function handleWsMessage(msg){
           if (p && p.name) playersMap[p.name] = p;
         });
       }
+      updateProximityWindows();
       refreshPlayersUI();
       break;
     case 'playerDisconnected':
@@ -4351,6 +4401,7 @@ function handleWsMessage(msg){
       }
       updateJokerButton();
       updateCarpenterButton();
+      updateInventoryUI();
       break;
     case 'readyUpdate':
       updateReadyCounter(msg.readyCount, msg.totalPlayers);
@@ -4493,6 +4544,7 @@ function initAll(){
   createToggleLobbyButton();
   createWaitingRoomScreen();
   createUI();
+  proximitySystem.start();
   wsConnect();
   requestAnimationFrame(sprintLoop);
   setupNotificationObservers();

@@ -376,7 +376,8 @@ class Game {
         hasDagger: false,
         hasFirstAid: false
       },
-      lastAttacker: null
+      lastAttacker: null,
+      carpenterCooldownUntil: 0
     });
     this.playerInventories.set(name, []);
   }
@@ -1939,12 +1940,18 @@ function handleCarpenterBuild(client, msg) {
   const myRole = game.roles.get(client.name);
   if (myRole !== 'carpenter') return;
   
-  const playerBarricades = game.barricades.filter(b => b.owner === client.name);
-  if (playerBarricades.length >= 5) {
-    client.ws.send(JSON.stringify({ t: 'error', message: 'Máximo de barricadas alcanzado' }));
+  const carpenterPlayer = game.players.get(client.name);
+  if (!carpenterPlayer || !carpenterPlayer.alive) return;
+
+  const CARPENTER_COOLDOWN_MS = 240000;
+  if (carpenterPlayer.carpenterCooldownUntil && carpenterPlayer.carpenterCooldownUntil > Date.now()) {
+    const remaining = Math.ceil((carpenterPlayer.carpenterCooldownUntil - Date.now()) / 1000);
+    client.ws.send(JSON.stringify({ t: 'error', message: `Barricada en cooldown (${remaining}s)` }));
     return;
   }
-  
+
+  carpenterPlayer.carpenterCooldownUntil = Date.now() + CARPENTER_COOLDOWN_MS;
+
   const position = msg.position || client.lastPosition || { x: 0.5, y: 0.5 };
   
   const barricade = {
