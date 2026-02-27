@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "MurderAtTheMeeting - Player (Test)",
+  "version": "0.1",
+  "description": "Inyecta los scripts de player y radar para pruebas.",
+  "permissions": ["scripting","storage","tabs"],
+  "host_permissions": ["https://pony.town/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://pony.town/*"],
+      "js": ["content-loader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": { "48": "icon48.png" },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "playerscript.bundle.js",
+        "radar.bundle.js",
+        "icon48.png"
+      ],
+      "matches": ["https://pony.town/*"]
+    }
+  ]
+}
