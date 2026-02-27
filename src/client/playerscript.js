@@ -185,7 +185,7 @@ const cooldowns = {
   jorguin_attack: 0,
   spy_investigate: 0,
   spy_attack: 0,
-  carpenter_builds: 0,
+  carpenter_barricade: 0,
   joker_distract: 0
 };
 
@@ -206,8 +206,7 @@ let jokerCooldownInterval = null;
 
 let _jokerFloatingBtn = null;
 let _carpenterFloatingBtn = null;
-let carpenterBuildsUsed = 0;
-const MAX_CARPENTER_BUILDS = 5;
+const CARPENTER_BARRICADE_COOLDOWN_MS = 240000;
 
 let myCoins = 0;
 let coinsOnMap = [];
@@ -228,7 +227,8 @@ const ITEM_INFO = {
   manoplas: { name: 'Manoplas', emoji: '🥊', type: 'passive' },
   daga: { name: 'Daga', emoji: '🗡️', type: 'passive' },
   reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false },
-  globos_joker: { name: 'Globos', emoji: '🎈', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'joker' }
+  globos_joker: { name: 'Globos', emoji: '🎈', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'joker' },
+  barricada_carpintero: { name: 'Barricada', emoji: '🧱', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'carpenter' }
 };
 
 function getInventoryItemCount(itemId) {
@@ -243,13 +243,18 @@ function isJokerActiveRole() {
   return rolesByName[meName] === 'joker' || revealedRoleForMe === 'joker';
 }
 
+function isCarpenterActiveRole() {
+  return rolesByName[meName] === 'carpenter' || revealedRoleForMe === 'carpenter';
+}
+
 function updateInventoryUI() {
   const section = $('#flee-inventory-section');
   const container = $('#flee-inventory-items');
   if (!section || !container) return;
 
   const showJokerItem = isJokerActiveRole();
-  if (myInventory.length === 0 && !showJokerItem) {
+  const showCarpenterItem = isCarpenterActiveRole();
+  if (myInventory.length === 0 && !showJokerItem && !showCarpenterItem) {
     section.style.display = 'none';
     return;
   }
@@ -263,6 +268,9 @@ function updateInventoryUI() {
 
   if (showJokerItem) {
     itemCounts.globos_joker = '∞';
+  }
+  if (showCarpenterItem) {
+    itemCounts.barricada_carpintero = '∞';
   }
 
   container.innerHTML = '';
@@ -297,6 +305,10 @@ function startItemUse(itemId) {
   
   if (itemId === 'globos_joker') {
     triggerJokerDistract();
+    return;
+  }
+  if (itemId === 'barricada_carpintero') {
+    triggerCarpenterBuild();
     return;
   }
 
@@ -374,6 +386,10 @@ function useItem(itemId, target) {
   
   if (itemId === 'globos_joker') {
     triggerJokerDistract();
+    return;
+  }
+  if (itemId === 'barricada_carpintero') {
+    triggerCarpenterBuild();
     return;
   }
 
@@ -1759,11 +1775,6 @@ function getActionButtonsForRole(myRole, targetName) {
     buttons.push(createActionButton('🐈‍⬛ Atacar', 'spy_attack', () => doSpyAttack(targetName)));
   }
   
-  if (myRole === 'carpenter') {
-    if (cooldowns.carpenter_builds < 3) {
-      buttons.push(createActionButton('🔨 Construir barricada', 'build', () => doBuildBarricade(targetName)));
-    }
-  }
   
   
   return buttons;
@@ -2722,21 +2733,7 @@ function doShoot(targetName) {
 }
 
 function doBuildBarricade(targetName) {
-  if (cooldowns.carpenter_builds >= 3) {
-    showNotification('❌ Máximo de barricadas alcanzado', 1500);
-    return;
-  }
-  if (abilityBlocked) {
-    showNotification('⛔ Tu habilidad está bloqueada', 1500);
-    return;
-  }
-  
-  const targetPlayer = playersMap[targetName];
-  const pos = targetPlayer && targetPlayer.position ? targetPlayer.position : { x: 0.5, y: 0.5 };
-  
-  cooldowns.carpenter_builds++;
-  wsSend({ t: 'carpenterBuild', target: targetName, by: meName, x: pos.x, y: pos.y });
-  showNotification(`🔨 Construyendo barricada cerca de ${targetName}`, 2000);
+  triggerCarpenterBuild();
   closeProfileModal();
 }
 
@@ -2996,7 +2993,7 @@ function createCarpenterButton() {
   
   const btn = document.createElement('button');
   btn.id = 'flee-carpenter-floating';
-  btn.innerHTML = `🔨 Construir (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`;
+  btn.innerHTML = '🧱 Barricada';
   Object.assign(btn.style, {
     position: 'fixed',
     left: '12px',
@@ -3018,10 +3015,6 @@ function createCarpenterButton() {
     e.preventDefault();
     if (abilityBlocked && abilityBlockedUntil > Date.now()) {
       showNotification('⛔ ¡Tus habilidades están bloqueadas!', 2000);
-      return;
-    }
-    if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-      showNotification('¡Ya has construido el máximo de barricadas!', 2000);
       return;
     }
     triggerCarpenterBuild();
@@ -3059,34 +3052,40 @@ function updateCarpenterButtonVisuals() {
   // Reset background to normal
   _carpenterFloatingBtn.style.background = 'linear-gradient(135deg, #8B4513, #A0522D)';
   
-  _carpenterFloatingBtn.innerHTML = `🔨 Construir (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`;
-  if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-    _carpenterFloatingBtn.style.opacity = '0.5';
+  const remaining = Math.max(0, Math.ceil((cooldowns.carpenter_barricade - Date.now()) / 1000));
+  if (isOnCooldown('carpenter_barricade')) {
+    _carpenterFloatingBtn.innerHTML = `🧱 Barricada (${remaining}s)`;
+    _carpenterFloatingBtn.style.opacity = '0.7';
     _carpenterFloatingBtn.disabled = true;
   } else {
+    _carpenterFloatingBtn.innerHTML = '🧱 Barricada';
     _carpenterFloatingBtn.style.opacity = '1';
     _carpenterFloatingBtn.disabled = false;
   }
 }
 
 function triggerCarpenterBuild() {
-  if (carpenterBuildsUsed >= MAX_CARPENTER_BUILDS) {
-    showNotification('❌ Máximo de barricadas alcanzado', 1500);
-    return;
-  }
   if (abilityBlocked && abilityBlockedUntil > Date.now()) {
     showNotification('⛔ Tu habilidad está bloqueada', 1500);
     return;
   }
-  
+
+  if (isOnCooldown('carpenter_barricade')) {
+    const remaining = Math.ceil((cooldowns.carpenter_barricade - Date.now()) / 1000);
+    showNotification(`⏳ Cooldown: ${remaining}s`, 1500);
+    return;
+  }
+
+  setCooldown('carpenter_barricade', CARPENTER_BARRICADE_COOLDOWN_MS);
+
   const currentPosition = window._lastKnownPosition || { x: 0.5, y: 0.5 };
-  
-  wsSend({ 
-    t: 'carpenterBuild', 
+
+  wsSend({
+    t: 'carpenterBuild',
     by: meName,
     position: currentPosition
   });
-  showNotification('🔨 Construyendo barricada en tu posición...', 2000);
+  showNotification('🧱 Barricada desplegada globalmente', 2000);
   flashOverlay('rgba(160, 82, 45, 0.3)');
 }
 
@@ -3111,7 +3110,7 @@ function resetGameState() {
   cooldowns.jorguin_attack = 0;
   cooldowns.spy_investigate = 0;
   cooldowns.spy_attack = 0;
-  cooldowns.carpenter_builds = 0;
+  cooldowns.carpenter_barricade = 0;
   cooldowns.joker_distract = 0;
   
   myTasksCompleted = 0;
@@ -3138,7 +3137,6 @@ function resetGameState() {
   
   distractionActive = false;
   revealedRoleForMe = false;
-  carpenterBuildsUsed = 0;
   
   Object.keys(protectedBy).forEach(k => delete protectedBy[k]);
   investigatedPlayers.length = 0;
@@ -3954,7 +3952,7 @@ function showFinalRole(){
     setRoleText(myRole);
     revealedRoleForMe = true;
     createJokerButton();
-    createCarpenterButton();
+    removeCarpenterButton();
     refreshPlayersUI();
     showReadyOverlay();
   }, 3000);
@@ -4300,10 +4298,8 @@ function handleWsMessage(msg){
     case 'barricadeBuilt':
       barricades.push(msg.barricade);
       window.postMessage({ source: 'radar-admin', type: 'barricadeCreated', barricade: msg.barricade }, '*');
-      carpenterBuildsUsed++;
-      cooldowns.carpenter_builds = carpenterBuildsUsed;
       updateCarpenterButtonVisuals();
-      showNotification(`🔨 Barricada construida! (${carpenterBuildsUsed}/${MAX_CARPENTER_BUILDS})`, 2000);
+      showNotification('🧱 Barricada desplegada', 2000);
       break;
     case 'barricadeUpdate':
       {
