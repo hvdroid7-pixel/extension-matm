@@ -32,85 +32,119 @@ let lastInvestigatedTarget = null;
 const sprint = { max: 100, value: 100, draining: false, exhausted: false, regenRate: 8, drainRate: 20 };
 
 let proximityWindows = {}; // { targetName: { element, lastUpdate } }
+const trackedPlayerPositions = {};
+
+function createProximitySystem() {
+  const BASE_THRESHOLD = 0.12;
+  const EXTENDED_THRESHOLD = 0.25;
+  let checkInterval = null;
+
+  function getContainer() {
+    let container = $('#flee-notifications-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'flee-notifications-container';
+      document.body.appendChild(container);
+    }
+    return container;
+  }
+
+  function getDetectionThreshold(targetName) {
+    if (revealedRoleForMe === 'sheriff') return EXTENDED_THRESHOLD;
+    if (revealedRoleForMe === 'spy' && investigatedPlayers.includes(targetName)) return EXTENDED_THRESHOLD;
+    return BASE_THRESHOLD;
+  }
+
+  function getPlayerPosition(playerName, playerData) {
+    if (playerData && playerData.position && typeof playerData.position.x === 'number' && typeof playerData.position.y === 'number') {
+      return playerData.position;
+    }
+    if (trackedPlayerPositions[playerName]) {
+      return trackedPlayerPositions[playerName];
+    }
+    return null;
+  }
+
+  function showWindow(playerName, playerData) {
+    let win = proximityWindows[playerName];
+    if (!win) {
+      const el = document.createElement('div');
+      el.className = 'flee-proximity-window';
+      el.innerHTML = `
+        <img src="${playerData.avatarUrl || ''}" class="prox-avatar" alt="${escapeHTML(playerName)}">
+        <div class="prox-info">
+          <div class="prox-name">${escapeHTML(playerName)}</div>
+          <div class="prox-actions" data-player="${escapeHTML(playerName)}"></div>
+        </div>
+      `;
+      getContainer().prepend(el);
+      win = { element: el };
+      proximityWindows[playerName] = win;
+    }
+
+    const avatar = win.element.querySelector('.prox-avatar');
+    if (avatar && playerData.avatarUrl) avatar.src = playerData.avatarUrl;
+  }
+
+  function update() {
+    const myPos = window.islandPlayerPos || window._lastKnownPosition;
+    if (!myPos) return;
+
+    Object.entries(playersMap).forEach(([playerName, playerData]) => {
+      if (playerName === meName || !playerData || !playerData.alive || playerData.connected === false) {
+        removeProximityWindow(playerName);
+        return;
+      }
+
+      const targetPos = getPlayerPosition(playerName, playerData);
+      if (!targetPos) {
+        removeProximityWindow(playerName);
+        return;
+      }
+
+      const dist = Math.hypot(targetPos.x - myPos.x, targetPos.y - myPos.y);
+      const threshold = getDetectionThreshold(playerName);
+
+      if (dist <= threshold) {
+        showWindow(playerName, playerData);
+        showProximityWindow(playerName, playerData);
+      } else {
+        removeProximityWindow(playerName);
+      }
+    });
+  }
+
+  function start() {
+    if (checkInterval) return;
+    getContainer();
+    checkInterval = setInterval(update, 250);
+  }
+
+  return { start, update };
+}
+
+const proximitySystem = createProximitySystem();
 
 function updateProximityWindows() {
-  const myPos = window.islandPlayerPos || { x: 0.5, y: 0.5 };
-  const entries = Object.entries(playersMap);
-  
-  entries.forEach(([name, p]) => {
-    if (name === meName || !p.alive || !p.connected) {
-      removeProximityWindow(name);
-      return;
-    }
-
-    const dist = Math.hypot(p.position.x - myPos.x, p.position.y - myPos.y);
-    let threshold = 0.12;
-    
-    // Alguacil: mayor rango
-    if (revealedRoleForMe === 'sheriff') threshold = 0.25;
-    // Espía: mayor rango con ya espiados
-    if (revealedRoleForMe === 'spy' && investigatedPlayers.includes(name)) threshold = 0.25;
-
-    if (dist < threshold) {
-      showProximityWindow(name, p);
-    } else {
-      removeProximityWindow(name);
-    }
-  });
+  proximitySystem.update();
 }
 
 function showProximityWindow(name, p) {
   let win = proximityWindows[name];
   if (!win) {
-    const el = document.createElement('div');
-    el.className = 'flee-proximity-window';
-    el.innerHTML = `
-      <img src="${p.avatarUrl || ''}" class="prox-avatar">
-      <div class="prox-info">
-        <div class="prox-name">${escapeHTML(name)}</div>
-        <div class="prox-actions"></div>
-      </div>
-    `;
-    $('#flee-notifications-container').prepend(el);
-    win = { element: el };
-    proximityWindows[name] = win;
+    return;
   }
-  
+
   const actions = win.element.querySelector('.prox-actions');
+  if (!actions) return;
+
   actions.innerHTML = '';
-  
+
   if (abilityBlocked) return;
 
-  const role = revealedRoleForMe;
-  if (role === 'killer') {
-    createProxBtn(actions, '🗡️ Atacar', () => wsSend({ t: 'attack', target: name }));
-  } else if (role === 'medic') {
-    createProxBtn(actions, '💊 Curar', () => wsSend({ t: 'heal', target: name }));
-  } else if (role === 'detective') {
-    createProxBtn(actions, '🔍 Investigar', () => wsSend({ t: 'investigate', target: name }));
-  } else if (role === 'sheriff') {
-    createProxBtn(actions, '🎯 Disparar', () => wsSend({ t: 'sheriffShoot', target: name }));
-  } else if (role === 'jorguin') {
-    createProxBtn(actions, '🪄 Hechizar', () => wsSend({ t: 'jorguinBlock', target: name }));
-    createProxBtn(actions, '⚔️ Atacar', () => wsSend({ t: 'jorguinAttack', target: name }));
-  } else if (role === 'spy') {
-    createProxBtn(actions, '👁️ Espiar', () => wsSend({ t: 'spyInvestigate', target: name }));
-    createProxBtn(actions, '🔪 Atacar', () => wsSend({ t: 'spyAttack', target: name }));
-  } else if (role === 'psychic') {
-    createProxBtn(actions, '🧊 Congelar', () => wsSend({ t: 'freezePlayer', target: name }));
-    createProxBtn(actions, '💀 Exterminar', () => wsSend({ t: 'exterminatePlayer', target: name }));
-  } else if (role === 'bodyguard') {
-    const btn = createProxBtn(actions, '🛡️ Proteger', () => {
-       if (guardState.protecting === name) {
-         guardState.protecting = null;
-         wsSend({ t: 'protect', target: null });
-       } else {
-         guardState.protecting = name;
-         wsSend({ t: 'protect', target: name });
-       }
-    });
-    if (guardState.protecting === name) btn.classList.add('active');
-  }
+  const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+  const buttons = getActionButtonsForRole(myRole, name);
+  buttons.forEach(btn => actions.appendChild(btn));
 }
 
 function createProxBtn(container, text, onclick) {
@@ -193,7 +227,8 @@ const ITEM_INFO = {
   bomba_humo: { name: 'Bomba de humo', emoji: '💨', type: 'active', requiresTarget: true },
   manoplas: { name: 'Manoplas', emoji: '🥊', type: 'passive' },
   daga: { name: 'Daga', emoji: '🗡️', type: 'passive' },
-  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false }
+  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false },
+  globos_joker: { name: 'Globos', emoji: '🎈', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'joker' }
 };
 
 function getInventoryItemCount(itemId) {
@@ -204,45 +239,54 @@ function hasItem(itemId) {
   return getInventoryItemCount(itemId) > 0;
 }
 
+function isJokerActiveRole() {
+  return rolesByName[meName] === 'joker' || revealedRoleForMe === 'joker';
+}
+
 function updateInventoryUI() {
   const section = $('#flee-inventory-section');
   const container = $('#flee-inventory-items');
   if (!section || !container) return;
-  
-  if (myInventory.length === 0) {
+
+  const showJokerItem = isJokerActiveRole();
+  if (myInventory.length === 0 && !showJokerItem) {
     section.style.display = 'none';
     return;
   }
-  
+
   section.style.display = 'block';
-  
+
   const itemCounts = {};
   myInventory.forEach(id => {
     itemCounts[id] = (itemCounts[id] || 0) + 1;
   });
-  
+
+  if (showJokerItem) {
+    itemCounts.globos_joker = '∞';
+  }
+
   container.innerHTML = '';
   Object.entries(itemCounts).forEach(([itemId, count]) => {
     const info = ITEM_INFO[itemId];
     if (!info) return;
-    
+
     const item = document.createElement('div');
     item.className = 'flee-inventory-item' + (info.type === 'passive' ? ' passive' : '');
-    
+
     if (info.type === 'active' && itemEffects.hourglassUntil > Date.now() && itemId === 'reloj_arena') {
       item.classList.add('active-effect');
     }
-    
+
     item.innerHTML = `
       <span class="item-emoji">${info.emoji}</span>
       <span class="item-name">${info.name}</span>
       <span class="item-count">x${count}</span>
     `;
-    
+
     if (info.type === 'active') {
       item.onclick = () => startItemUse(itemId);
     }
-    
+
     container.appendChild(item);
   });
 }
@@ -251,6 +295,11 @@ function startItemUse(itemId) {
   const info = ITEM_INFO[itemId];
   if (!info || info.type !== 'active') return;
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -323,6 +372,11 @@ function useItem(itemId, target) {
     return;
   }
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -1607,8 +1661,6 @@ function openProfileModal(targetName) {
   if (!modal) return;
   
   const player = playersMap[targetName] || {};
-  const myRole = rolesByName[meName] || 'innocent';
-  
   $('#flee-profile-avatar').src = player.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(targetName)}`;
   $('#flee-profile-name').textContent = targetName;
   $('#flee-profile-desc').textContent = player.description || '';
@@ -1636,11 +1688,6 @@ function openProfileModal(targetName) {
   
   const actionsEl = $('#flee-profile-actions');
   actionsEl.innerHTML = '';
-  
-  if (targetName !== meName && player.alive !== false && currentPhase === 'running' && revealedRoleForMe) {
-    const buttons = getActionButtonsForRole(myRole, targetName);
-    buttons.forEach(btn => actionsEl.appendChild(btn));
-  }
   
   modal.classList.add('active');
 }
@@ -1718,9 +1765,6 @@ function getActionButtonsForRole(myRole, targetName) {
     }
   }
   
-  if (myRole === 'joker') {
-    buttons.push(createActionButton('🃏 Distraer', 'joker', () => triggerJokerDistract()));
-  }
   
   return buttons;
 }
@@ -3731,6 +3775,8 @@ window.addEventListener('message', (ev) => {
   
   if (ev.data.source === 'radar-admin' && ev.data.type === 'positionUpdate') {
     window._lastKnownPosition = ev.data.position;
+    window.islandPlayerPos = ev.data.position;
+    updateProximityWindows();
     
     // Send position to server periodically for tracking
     const now = Date.now();
@@ -4065,6 +4111,7 @@ function handleWsMessage(msg){
       break;
     case 'yourRole':
       rolesByName[meName] = msg.role;
+      updateInventoryUI();
       break;
     case 'coinsSpawned':
       if (msg.enabled || msg.coins) {
@@ -4214,6 +4261,12 @@ function handleWsMessage(msg){
       window.postMessage({ source: 'radar-admin', type: 'trackPlayer', name: msg.target, role: msg.role }, '*');
       break;
     case 'trackedPlayerPosition':
+      if (msg.name && msg.position) {
+        trackedPlayerPositions[msg.name] = msg.position;
+        if (playersMap[msg.name]) {
+          playersMap[msg.name].position = msg.position;
+        }
+      }
       window.postMessage({
         source: 'radar-admin',
         type: 'updateTrackedPlayerPosition',
@@ -4327,6 +4380,7 @@ function handleWsMessage(msg){
           if (p && p.name) playersMap[p.name] = p;
         });
       }
+      updateProximityWindows();
       refreshPlayersUI();
       break;
     case 'playerDisconnected':
@@ -4351,6 +4405,7 @@ function handleWsMessage(msg){
       }
       updateJokerButton();
       updateCarpenterButton();
+      updateInventoryUI();
       break;
     case 'readyUpdate':
       updateReadyCounter(msg.readyCount, msg.totalPlayers);
@@ -4493,6 +4548,7 @@ function initAll(){
   createToggleLobbyButton();
   createWaitingRoomScreen();
   createUI();
+  proximitySystem.start();
   wsConnect();
   requestAnimationFrame(sprintLoop);
   setupNotificationObservers();
