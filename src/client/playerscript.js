@@ -89,19 +89,22 @@ function getAvatarForPlayer(name) {
 }
 
 function createProximitySystem() {
-  const BASE_THRESHOLD = 0.12;
-  const EXTENDED_THRESHOLD = 0.25;
+  const BASE_THRESHOLD = 0.10;
+  const SPECIAL_RANGE_MULTIPLIER = 0.25 / 0.12;
+  const EXTENDED_THRESHOLD = BASE_THRESHOLD * SPECIAL_RANGE_MULTIPLIER;
+  const HYSTERESIS_MARGIN = 0.012;
   let checkInterval = null;
 
   function getContainer() {
     return getProximityStack();
   }
 
-  function getDetectionThreshold(targetName) {
+  function getDetectionThreshold(targetName, hasWindow) {
     const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
-    if (myRole === 'sheriff') return EXTENDED_THRESHOLD;
-    if (myRole === 'spy' && spyInvestigatedPlayers.includes(targetName)) return EXTENDED_THRESHOLD;
-    return BASE_THRESHOLD;
+    const base = (myRole === 'sheriff' || (myRole === 'spy' && spyInvestigatedPlayers.includes(targetName)))
+      ? EXTENDED_THRESHOLD
+      : BASE_THRESHOLD;
+    return hasWindow ? (base + HYSTERESIS_MARGIN) : base;
   }
 
   function getPlayerPosition(playerName, playerData) {
@@ -123,6 +126,10 @@ function createProximitySystem() {
         <img src="${playerData.avatarUrl || ''}" class="prox-avatar" alt="${escapeHTML(playerName)}">
         <div class="prox-info">
           <div class="prox-name">${escapeHTML(playerName)}</div>
+          <div class="prox-health" aria-hidden="true">
+            <div class="prox-health-fill"></div>
+            <span class="prox-health-text">100%</span>
+          </div>
           <div class="prox-actions" data-player="${escapeHTML(playerName)}"></div>
         </div>
       `;
@@ -158,7 +165,7 @@ function createProximitySystem() {
       }
 
       const dist = Math.hypot(targetPos.x - myPos.x, targetPos.y - myPos.y);
-      const threshold = getDetectionThreshold(playerName);
+      const threshold = getDetectionThreshold(playerName, !!proximityWindows[playerName]);
 
       if (dist <= threshold) {
         showWindow(playerName, playerData);
@@ -219,6 +226,23 @@ function buildActionButtonsSignature(myRole, targetName) {
   return `${myRole}:${targetName}:${cooldownSnapshot}`;
 }
 
+function updateMedicHealthInProximity(win, playerData, myRole) {
+  const healthWrap = win.element.querySelector('.prox-health');
+  const healthFill = win.element.querySelector('.prox-health-fill');
+  const healthText = win.element.querySelector('.prox-health-text');
+  if (!healthWrap || !healthFill || !healthText) return;
+
+  if (myRole !== 'medic') {
+    healthWrap.classList.remove('visible');
+    return;
+  }
+
+  const hp = Math.max(0, Math.min(100, Number(playerData?.health ?? 100)));
+  healthWrap.classList.add('visible');
+  healthFill.style.width = `${hp}%`;
+  healthText.textContent = `${Math.round(hp)}%`;
+}
+
 function showProximityWindow(name, p) {
   let win = proximityWindows[name];
   if (!win) {
@@ -229,6 +253,8 @@ function showProximityWindow(name, p) {
   if (!actions) return;
 
   const myRole = rolesByName[meName] || revealedRoleForMe || 'innocent';
+  updateMedicHealthInProximity(win, p, myRole);
+
   const signature = buildActionButtonsSignature(myRole, name);
   if (win.actionsSignature === signature) return;
 
@@ -759,6 +785,10 @@ function createStyles(){
     .prox-avatar { width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(var(--flee-border-rgb),0.75); object-fit: cover; flex: 0 0 38px; }
     .prox-info { flex: 1; min-width: 0; }
     .prox-name { font-weight: 800; font-size: 13px; margin-bottom: 4px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .prox-health{display:none;position:relative;height:10px;border-radius:999px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);overflow:hidden;margin-bottom:4px}
+    .prox-health.visible{display:block}
+    .prox-health-fill{height:100%;width:100%;background:linear-gradient(90deg,#2ecc71,#45c35f);transition:width 0.2s ease}
+    .prox-health-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:800;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.7);pointer-events:none}
     .prox-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
     .prox-btn { 
       padding: 4px 8px; 
