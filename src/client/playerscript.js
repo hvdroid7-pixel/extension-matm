@@ -227,7 +227,8 @@ const ITEM_INFO = {
   bomba_humo: { name: 'Bomba de humo', emoji: '💨', type: 'active', requiresTarget: true },
   manoplas: { name: 'Manoplas', emoji: '🥊', type: 'passive' },
   daga: { name: 'Daga', emoji: '🗡️', type: 'passive' },
-  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false }
+  reloj_arena: { name: 'Reloj de arena', emoji: '⏳', type: 'active', requiresTarget: false },
+  globos_joker: { name: 'Globos', emoji: '🎈', type: 'active', requiresTarget: false, unlimited: true, roleRestricted: 'joker' }
 };
 
 function getInventoryItemCount(itemId) {
@@ -238,45 +239,54 @@ function hasItem(itemId) {
   return getInventoryItemCount(itemId) > 0;
 }
 
+function isJokerActiveRole() {
+  return rolesByName[meName] === 'joker' || revealedRoleForMe === 'joker';
+}
+
 function updateInventoryUI() {
   const section = $('#flee-inventory-section');
   const container = $('#flee-inventory-items');
   if (!section || !container) return;
-  
-  if (myInventory.length === 0) {
+
+  const showJokerItem = isJokerActiveRole();
+  if (myInventory.length === 0 && !showJokerItem) {
     section.style.display = 'none';
     return;
   }
-  
+
   section.style.display = 'block';
-  
+
   const itemCounts = {};
   myInventory.forEach(id => {
     itemCounts[id] = (itemCounts[id] || 0) + 1;
   });
-  
+
+  if (showJokerItem) {
+    itemCounts.globos_joker = '∞';
+  }
+
   container.innerHTML = '';
   Object.entries(itemCounts).forEach(([itemId, count]) => {
     const info = ITEM_INFO[itemId];
     if (!info) return;
-    
+
     const item = document.createElement('div');
     item.className = 'flee-inventory-item' + (info.type === 'passive' ? ' passive' : '');
-    
+
     if (info.type === 'active' && itemEffects.hourglassUntil > Date.now() && itemId === 'reloj_arena') {
       item.classList.add('active-effect');
     }
-    
+
     item.innerHTML = `
       <span class="item-emoji">${info.emoji}</span>
       <span class="item-name">${info.name}</span>
       <span class="item-count">x${count}</span>
     `;
-    
+
     if (info.type === 'active') {
       item.onclick = () => startItemUse(itemId);
     }
-    
+
     container.appendChild(item);
   });
 }
@@ -285,6 +295,11 @@ function startItemUse(itemId) {
   const info = ITEM_INFO[itemId];
   if (!info || info.type !== 'active') return;
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -357,6 +372,11 @@ function useItem(itemId, target) {
     return;
   }
   
+  if (itemId === 'globos_joker') {
+    triggerJokerDistract();
+    return;
+  }
+
   if (!hasItem(itemId)) {
     showNotification('No tienes este objeto', 2000);
     return;
@@ -1745,9 +1765,6 @@ function getActionButtonsForRole(myRole, targetName) {
     }
   }
   
-  if (myRole === 'joker') {
-    buttons.push(createActionButton('🃏 Distraer', 'joker', () => triggerJokerDistract()));
-  }
   
   return buttons;
 }
@@ -4094,6 +4111,7 @@ function handleWsMessage(msg){
       break;
     case 'yourRole':
       rolesByName[meName] = msg.role;
+      updateInventoryUI();
       break;
     case 'coinsSpawned':
       if (msg.enabled || msg.coins) {
@@ -4387,6 +4405,7 @@ function handleWsMessage(msg){
       }
       updateJokerButton();
       updateCarpenterButton();
+      updateInventoryUI();
       break;
     case 'readyUpdate':
       updateReadyCounter(msg.readyCount, msg.totalPlayers);
